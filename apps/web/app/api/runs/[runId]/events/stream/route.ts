@@ -1,6 +1,6 @@
 import { eq, and, gte } from 'drizzle-orm';
-import { makeDb } from '@ocdash/db/src/client.js';
-import { events } from '@ocdash/db/src/schema.js';
+import { makeDb } from '@ocdash/db/client';
+import { events } from '@ocdash/db/schema';
 import type { OcdashEvent } from '@ocdash/shared';
 import { toSse } from '@ocdash/shared';
 
@@ -32,7 +32,6 @@ export async function GET(req: Request, { params }: { params: Promise<{ runId: s
   const afterSeq = Number(new URL(req.url).searchParams.get('after_seq') ?? '0');
   const { db, pool } = makeDb(url);
 
-  // We'll poll for new events. It's crude but reliable for MVP.
   const encoder = new TextEncoder();
   let closed = false;
 
@@ -40,7 +39,6 @@ export async function GET(req: Request, { params }: { params: Promise<{ runId: s
     async start(controller) {
       const write = (s: string) => controller.enqueue(encoder.encode(s));
 
-      // Initial comment so proxies flush.
       write(`: stream started for ${runId}\n\n`);
 
       let cursor = afterSeq;
@@ -58,7 +56,6 @@ export async function GET(req: Request, { params }: { params: Promise<{ runId: s
           cursor = Math.max(cursor, ev.seq);
         }
 
-        // heartbeat every ~15s, and a small sleep to avoid hammering
         write(`: heartbeat ${Date.now()}\n\n`);
         await new Promise((r) => setTimeout(r, 750));
       }

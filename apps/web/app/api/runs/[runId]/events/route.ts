@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { desc, eq, and, gt } from 'drizzle-orm';
-import { makeDb } from '@ocdash/db/src/client.js';
-import { events } from '@ocdash/db/src/schema.js';
+import { makeDb } from '@ocdash/db/client';
+import { events } from '@ocdash/db/schema';
 
 export const runtime = 'nodejs';
 

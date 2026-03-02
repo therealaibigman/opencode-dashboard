@@ -1,8 +1,8 @@
 import './env.js';
 
 import { and, eq, sql } from 'drizzle-orm';
-import { makeDb } from '@ocdash/db/src/client.js';
-import { events, runs } from '@ocdash/db/src/schema.js';
+import { makeDb } from '@ocdash/db/client';
+import { events, runs } from '@ocdash/db/schema';
 import { newId } from '@ocdash/shared';
 import type { OcdashEvent } from '@ocdash/shared';
 import { requireEnv } from './env.js';
