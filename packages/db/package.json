@@ -6,8 +6,8 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
     "drizzle-kit": "drizzle-kit",
-    "generate": "drizzle-kit generate",
-    "migrate": "drizzle-kit migrate"
+    "generate": "drizzle-kit generate --config ./drizzle.config.cjs",
+    "migrate": "drizzle-kit migrate --config ./drizzle.config.cjs"
   },
   "dependencies": {
     "drizzle-orm": "^0.44.0",
