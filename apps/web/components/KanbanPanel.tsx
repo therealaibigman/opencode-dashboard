@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useBasePath } from './useBasePath';
+import { useProject } from './ProjectContext';
 
 type TaskStatus = 'inbox' | 'planned' | 'in_progress' | 'blocked' | 'review' | 'done';
 
@@ -37,19 +38,21 @@ function nextStatus(s: TaskStatus, dir: -1 | 1): TaskStatus {
 
 export function KanbanPanel() {
   const BASE = useBasePath();
-  const [projectId, setProjectId] = useState('prj_demo');
+  const { selectedProjectId: projectId } = useProject();
+
   const [tasks, setTasks] = useState<Task[]>([]);
   const [err, setErr] = useState<string | null>(null);
-  const [auto, setAuto] = useState(true);
   const [lastSync, setLastSync] = useState<number | null>(null);
 
   const refreshing = useRef(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const api = useMemo(
     () => ({
       tasks: `${BASE}/api/tasks`,
       patchTask: (id: string) => `${BASE}/api/tasks/${encodeURIComponent(id)}`,
-      runs: `${BASE}/api/runs`
+      runs: `${BASE}/api/runs`,
+      projectEvents: (pid: string) => `${BASE}/api/projects/${encodeURIComponent(pid)}/events/stream`
     }),
     [BASE]
   );
@@ -72,23 +75,45 @@ export function KanbanPanel() {
     }
   }
 
+  function refreshDebounced() {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      refresh().catch(() => void 0);
+    }, 150);
+  }
+
   useEffect(() => {
-    refresh();
+    refresh().catch(() => void 0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
+  // Project-level SSE stream (event-sourced-ish)
   useEffect(() => {
-    if (!auto) return;
+    setErr(null);
+    const es = new EventSource(api.projectEvents(projectId));
 
-    const t = setInterval(() => {
-      // Don’t hammer when tab is hidden.
-      if (document.visibilityState !== 'visible') return;
-      refresh();
-    }, 1500);
+    const onAny = () => {
+      // Any task/run event triggers a refresh (debounced).
+      refreshDebounced();
+    };
 
-    return () => clearInterval(t);
+    es.addEventListener('task.created', onAny);
+    es.addEventListener('task.updated', onAny);
+    es.addEventListener('task.status.changed', onAny);
+    es.addEventListener('run.created', onAny);
+    es.addEventListener('run.started', onAny);
+    es.addEventListener('run.completed', onAny);
+    es.addEventListener('run.failed', onAny);
+
+    es.onerror = () => {
+      setErr('SSE disconnected (project stream). Check nginx buffering/timeouts.');
+    };
+
+    return () => {
+      es.close();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [auto, projectId, api.tasks]);
+  }, [projectId, api.projectEvents]);
 
   async function moveTask(t: Task, dir: -1 | 1) {
     const to = nextStatus(t.status, dir);
@@ -97,7 +122,7 @@ export function KanbanPanel() {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ status: to })
     });
-    await refresh();
+    refreshDebounced();
   }
 
   async function queueRun(t: Task) {
@@ -120,33 +145,18 @@ export function KanbanPanel() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div className="space-y-2">
           <div className="text-xs text-zinc-300">Project</div>
-          <input
-            value={projectId}
-            onChange={(e) => setProjectId(e.target.value)}
-            className="rounded-lg border border-matrix-500/20 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:ring-1 focus:ring-matrix-500/40"
-          />
+          <div className="rounded-lg border border-matrix-500/20 bg-black/25 px-3 py-2 text-sm text-zinc-100">
+            {projectId}
+          </div>
         </div>
 
         <div className="flex items-center gap-2">
           <button
-            onClick={refresh}
+            onClick={() => refresh()}
             className="rounded-lg bg-black/25 px-3 py-2 text-sm text-zinc-200 ring-1 ring-matrix-500/20 hover:bg-black/35"
           >
             Refresh
           </button>
-
-          <button
-            onClick={() => setAuto((v) => !v)}
-            className={
-              auto
-                ? 'rounded-lg bg-matrix-500/15 px-3 py-2 text-sm text-matrix-100 ring-1 ring-matrix-500/40 hover:bg-matrix-500/20'
-                : 'rounded-lg bg-black/25 px-3 py-2 text-sm text-zinc-200 ring-1 ring-matrix-500/20 hover:bg-black/35'
-            }
-            title="Auto refresh toggles a small poller (MVP)."
-          >
-            Auto: {auto ? 'ON' : 'OFF'}
-          </button>
-
           <div className="text-xs text-zinc-500">
             {lastSync ? `Synced ${Math.floor((Date.now() - lastSync) / 1000)}s ago` : 'Not synced yet'}
           </div>

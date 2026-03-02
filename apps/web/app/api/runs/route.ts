@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { makeDb } from '@ocdash/db/client';
 import { runs } from '@ocdash/db/schema';
 import { newId } from '@ocdash/shared';
+import { appendProjectEvent } from '../_lib/eventlog';
 
 export const runtime = 'nodejs';
 
@@ -31,6 +32,15 @@ export async function POST(req: Request) {
       taskId,
       status: 'queued',
       modelProfile
+    });
+
+    await appendProjectEvent({
+      databaseUrl: url,
+      projectId,
+      taskId,
+      runId,
+      type: 'run.created',
+      payload: { run: { id: runId, status: 'queued', model_profile: modelProfile, task_id: taskId } }
     });
 
     return NextResponse.json(

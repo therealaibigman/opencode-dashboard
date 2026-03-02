@@ -1,8 +1,9 @@
 import { NextResponse } from 'next/server';
-import { and, asc, desc, eq } from 'drizzle-orm';
+import { asc, desc, eq } from 'drizzle-orm';
 import { makeDb } from '@ocdash/db/client';
 import { tasks } from '@ocdash/db/schema';
 import { newId } from '@ocdash/shared';
+import { appendProjectEvent } from '../_lib/eventlog';
 
 export const runtime = 'nodejs';
 
@@ -58,6 +59,14 @@ export async function POST(req: Request) {
       bodyMd,
       status,
       updatedAt: new Date()
+    });
+
+    await appendProjectEvent({
+      databaseUrl: url,
+      projectId,
+      taskId: id,
+      type: 'task.created',
+      payload: { task: { id, project_id: projectId, title, body_md: bodyMd, status } }
     });
 
     return NextResponse.json({ task: { id, project_id: projectId, title, body_md: bodyMd, status } }, { status: 201 });

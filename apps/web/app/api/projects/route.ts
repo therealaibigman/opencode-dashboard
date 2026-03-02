@@ -31,7 +31,6 @@ export async function POST(req: Request) {
 
   const { db, pool } = makeDb(url);
   try {
-    // basic upsert by id
     const existing = await db.select({ id: projects.id }).from(projects).where(eq(projects.id, projectId));
     if (existing.length) {
       await db.update(projects).set({ name }).where(eq(projects.id, projectId));

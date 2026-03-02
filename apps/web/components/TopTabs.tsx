@@ -16,11 +16,11 @@ export function TopTabs({
   const [tab, setTab] = useState<TabKey>(initial);
 
   return (
-    <div className="mx-auto max-w-6xl p-4 md:p-6">
+    <div className="mx-auto max-w-6xl">
       <header className="mb-4 flex items-center justify-between">
-        <div>
-          <div className="text-sm text-matrix-200/80">OpenCode Dashboard</div>
-          <h1 className="text-xl font-semibold tracking-tight text-matrix-100">Control Room</h1>
+        <div className="md:hidden">
+          <div className="text-xs text-matrix-200/80">OpenCode Dashboard</div>
+          <h1 className="text-lg font-semibold tracking-tight text-matrix-100">Control Room</h1>
         </div>
 
         <div className="flex items-center gap-2 rounded-xl bg-bg-2/60 p-1 shadow-neon backdrop-blur">
