@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useBasePath } from './useBasePath';
 
 type TaskStatus = 'inbox' | 'planned' | 'in_progress' | 'blocked' | 'review' | 'done';
@@ -40,6 +40,10 @@ export function KanbanPanel() {
   const [projectId, setProjectId] = useState('prj_demo');
   const [tasks, setTasks] = useState<Task[]>([]);
   const [err, setErr] = useState<string | null>(null);
+  const [auto, setAuto] = useState(true);
+  const [lastSync, setLastSync] = useState<number | null>(null);
+
+  const refreshing = useRef(false);
 
   const api = useMemo(
     () => ({
@@ -51,14 +55,20 @@ export function KanbanPanel() {
   );
 
   async function refresh() {
+    if (refreshing.current) return;
+    refreshing.current = true;
+
     setErr(null);
     try {
       const data = await j<{ tasks: Task[] }>(
         await fetch(`${api.tasks}?project_id=${encodeURIComponent(projectId)}`, { cache: 'no-store' })
       );
       setTasks(data.tasks);
+      setLastSync(Date.now());
     } catch (e: any) {
       setErr(String(e?.message ?? e));
+    } finally {
+      refreshing.current = false;
     }
   }
 
@@ -66,6 +76,19 @@ export function KanbanPanel() {
     refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
+
+  useEffect(() => {
+    if (!auto) return;
+
+    const t = setInterval(() => {
+      // Don’t hammer when tab is hidden.
+      if (document.visibilityState !== 'visible') return;
+      refresh();
+    }, 1500);
+
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [auto, projectId, api.tasks]);
 
   async function moveTask(t: Task, dir: -1 | 1) {
     const to = nextStatus(t.status, dir);
@@ -103,6 +126,7 @@ export function KanbanPanel() {
             className="rounded-lg border border-matrix-500/20 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:ring-1 focus:ring-matrix-500/40"
           />
         </div>
+
         <div className="flex items-center gap-2">
           <button
             onClick={refresh}
@@ -110,6 +134,22 @@ export function KanbanPanel() {
           >
             Refresh
           </button>
+
+          <button
+            onClick={() => setAuto((v) => !v)}
+            className={
+              auto
+                ? 'rounded-lg bg-matrix-500/15 px-3 py-2 text-sm text-matrix-100 ring-1 ring-matrix-500/40 hover:bg-matrix-500/20'
+                : 'rounded-lg bg-black/25 px-3 py-2 text-sm text-zinc-200 ring-1 ring-matrix-500/20 hover:bg-black/35'
+            }
+            title="Auto refresh toggles a small poller (MVP)."
+          >
+            Auto: {auto ? 'ON' : 'OFF'}
+          </button>
+
+          <div className="text-xs text-zinc-500">
+            {lastSync ? `Synced ${Math.floor((Date.now() - lastSync) / 1000)}s ago` : 'Not synced yet'}
+          </div>
         </div>
       </div>
 
