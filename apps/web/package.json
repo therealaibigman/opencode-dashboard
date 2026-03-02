@@ -11,18 +11,21 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "next": "15.2.1",
-    "react": "19.0.0",
-    "react-dom": "19.0.0",
-    "@ocdash/shared": "file:../../packages/shared",
     "@ocdash/db": "file:../../packages/db",
+    "@ocdash/shared": "file:../../packages/shared",
     "drizzle-orm": "^0.44.0",
-    "pg": "^8.13.1"
+    "next": "15.2.1",
+    "pg": "^8.13.1",
+    "react": "19.0.0",
+    "react-dom": "19.0.0"
   },
   "devDependencies": {
-    "typescript": "^5.7.3",
     "@types/node": "^22.13.8",
     "@types/react": "^19.0.10",
-    "@types/react-dom": "^19.0.4"
+    "@types/react-dom": "^19.0.4",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.7.3"
   }
 }
