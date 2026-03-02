@@ -1,0 +1,23 @@
+{
+  "name": "@ocdash/worker",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "node --enable-source-maps dist/index.js",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@ocdash/shared": "file:../../packages/shared",
+    "@ocdash/db": "file:../../packages/db",
+    "drizzle-orm": "^0.44.0",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "@types/node": "^22.13.8"
+  }
+}
