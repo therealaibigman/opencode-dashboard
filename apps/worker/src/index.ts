@@ -1,12 +1,13 @@
+import './env.js';
+
 import { and, eq, sql } from 'drizzle-orm';
 import { makeDb } from '@ocdash/db/src/client.js';
 import { events, runs } from '@ocdash/db/src/schema.js';
 import { newId } from '@ocdash/shared';
 import type { OcdashEvent } from '@ocdash/shared';
+import { requireEnv } from './env.js';
 
-const DATABASE_URL = process.env.DATABASE_URL;
-if (!DATABASE_URL) throw new Error('DATABASE_URL missing');
-
+const DATABASE_URL = requireEnv('DATABASE_URL');
 const POLL_MS = Number(process.env.WORKER_POLL_INTERVAL_MS ?? '750');
 
 function nowIso() {
@@ -40,10 +41,6 @@ async function getNextSeq(db: any, runId: string): Promise<number> {
 }
 
 async function processRun(db: any, runId: string) {
-  // This is a placeholder pipeline that just emits progress.
-  // Later: call OpenCode HTTP API per step.
-
-  // Mark started
   await db
     .update(runs)
     .set({ status: 'running', startedAt: new Date() })
