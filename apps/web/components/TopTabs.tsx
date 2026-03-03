@@ -16,8 +16,8 @@ export function TopTabs({
   const [tab, setTab] = useState<TabKey>(initial);
 
   return (
-    <div className="mx-auto max-w-6xl">
-      <header className="mb-4 flex items-center justify-between">
+    <div className="flex h-full min-h-[calc(100vh-48px)] flex-col">
+      <header className="mb-4 flex items-center justify-between gap-3">
         <div className="md:hidden">
           <div className="text-xs text-matrix-200/80">OpenCode Dashboard</div>
           <h1 className="text-lg font-semibold tracking-tight text-matrix-100">Control Room</h1>
@@ -47,8 +47,8 @@ export function TopTabs({
         </div>
       </header>
 
-      <section className="rounded-2xl border border-matrix-500/20 bg-bg-2/40 shadow-neon backdrop-blur">
-        <div className="p-4 md:p-6">{tab === 'chat' ? chat : kanban}</div>
+      <section className="flex-1 rounded-2xl border border-matrix-500/20 bg-bg-2/40 shadow-neon backdrop-blur">
+        <div className="h-full p-4 md:p-6">{tab === 'chat' ? chat : kanban}</div>
       </section>
     </div>
   );

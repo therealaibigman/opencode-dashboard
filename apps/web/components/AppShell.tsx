@@ -9,13 +9,7 @@ async function j<T>(res: Response): Promise<T> {
   return (await res.json()) as T;
 }
 
-export function AppShell({
-  title,
-  children
-}: {
-  title?: string;
-  children: React.ReactNode;
-}) {
+export function AppShell({ title, children }: { title?: string; children: React.ReactNode }) {
   const BASE = useBasePath();
   const { projects, selectedProjectId, setSelectedProjectId, refreshProjects } = useProject();
 
@@ -44,8 +38,8 @@ export function AppShell({
   }
 
   return (
-    <div className="mx-auto flex min-h-screen max-w-7xl">
-      <aside className="hidden w-72 shrink-0 border-r border-matrix-500/15 bg-black/20 p-4 md:block">
+    <div className="flex min-h-screen w-full">
+      <aside className="hidden w-80 shrink-0 border-r border-matrix-500/15 bg-black/25 p-4 md:block">
         <div className="mb-4">
           <div className="text-xs text-matrix-200/80">OpenCode Dashboard</div>
           <div className="text-lg font-semibold text-matrix-100">{title ?? 'Control Room'}</div>
@@ -58,7 +52,8 @@ export function AppShell({
           onChange={(e) => setSelectedProjectId(e.target.value)}
         >
           {projects.map((p) => (
-            <option key={p.id} value={p.id}>
+            <option key={p.id} value={p.id}
+            >
               {p.name} ({p.id})
             </option>
           ))}
@@ -88,7 +83,7 @@ export function AppShell({
         </div>
       </aside>
 
-      <main className="w-full p-4 md:p-6">{children}</main>
+      <main className="min-w-0 flex-1 p-4 md:p-6">{children}</main>
     </div>
   );
 }
