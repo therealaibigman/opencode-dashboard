@@ -25,7 +25,7 @@ function summarisePayload(payload: any): string {
   }
 }
 
-export function EventFeed({ max = 200 }: { max?: number }) {
+export function EventFeed({ max = 400, className = '' }: { max?: number; className?: string }) {
   const BASE = useBasePath();
   const { selectedProjectId: projectId } = useProject();
 
@@ -52,7 +52,6 @@ export function EventFeed({ max = 200 }: { max?: number }) {
       }
     };
 
-    // We don't know the full universe here, so listen to onmessage AND a few known types.
     es.onmessage = onAny;
     const known = [
       'task.created',
@@ -78,7 +77,8 @@ export function EventFeed({ max = 200 }: { max?: number }) {
   }, [url, max]);
 
   return (
-    <div className="rounded-xl border border-matrix-500/20 bg-black/25 p-3">
+    <div className={`flex h-full min-h-[520px] flex-col rounded-xl border border-matrix-500/20 bg-black/25 p-3 ${className}`}
+    >
       <div className="mb-2 flex items-center justify-between">
         <div className="text-xs font-medium text-matrix-200/90">Event feed</div>
         <div
@@ -94,25 +94,27 @@ export function EventFeed({ max = 200 }: { max?: number }) {
         </div>
       </div>
 
-      <div className="max-h-80 space-y-2 overflow-auto pr-1">
+      <div className="flex-1 overflow-auto pr-1">
         {events.length === 0 ? (
           <div className="text-[11px] text-zinc-400">No events yet.</div>
         ) : null}
 
-        {events.map((e) => (
-          <div key={`${e.id}:${e.seq}:${e.ts}`} className="rounded-lg border border-matrix-500/10 bg-black/20 p-2">
-            <div className="flex items-center justify-between gap-2">
-              <div className="text-[11px] text-zinc-300">{fmtTs(e.ts)}</div>
-              <div className="text-[11px] text-matrix-200/90">{e.type}</div>
+        <div className="space-y-2">
+          {events.map((e) => (
+            <div key={`${e.id}:${e.seq}:${e.ts}`} className="rounded-lg border border-matrix-500/10 bg-black/20 p-2">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-[11px] text-zinc-300">{fmtTs(e.ts)}</div>
+                <div className="text-[11px] text-matrix-200/90">{e.type}</div>
+              </div>
+              <div className="mt-1 text-[11px] text-zinc-200">
+                {summarisePayload(e.payload)}
+              </div>
             </div>
-            <div className="mt-1 text-[11px] text-zinc-200">
-              {summarisePayload(e.payload)}
-            </div>
-          </div>
-        ))}
+          ))}
+        </div>
       </div>
 
-      <div className="mt-2 text-[10px] text-zinc-500">{url}</div>
+      <div className="mt-2 truncate text-[10px] text-zinc-500">{url}</div>
     </div>
   );
 }

@@ -42,7 +42,7 @@ export function ChatPanel() {
         Project: <span className="text-zinc-100">{projectId}</span>
       </div>
 
-      <div className="grid gap-3 md:grid-cols-2">
+      <div className="grid items-stretch gap-3 md:grid-cols-2">
         <div className="space-y-3">
           <div className="grid gap-3">
             <div className="space-y-2">
@@ -113,7 +113,7 @@ export function ChatPanel() {
           </div>
         </div>
 
-        <EventFeed />
+        <EventFeed className="min-h-[620px] md:min-h-[calc(100vh-240px)]" />
       </div>
     </div>
   );
