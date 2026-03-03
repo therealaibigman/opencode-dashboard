@@ -1,10 +1,38 @@
 import { NextResponse } from 'next/server';
+import { and, asc, desc, eq } from 'drizzle-orm';
 import { makeDb } from '@ocdash/db/client';
 import { runs } from '@ocdash/db/schema';
 import { newId } from '@ocdash/shared';
 import { appendProjectEvent } from '../_lib/eventlog';
 
 export const runtime = 'nodejs';
+
+export async function GET(req: Request) {
+  const url = process.env.DATABASE_URL;
+  if (!url) return NextResponse.json({ error: 'DATABASE_URL missing' }, { status: 500 });
+
+  const u = new URL(req.url);
+  const projectId = u.searchParams.get('project_id')?.trim() || null;
+  const taskId = u.searchParams.get('task_id')?.trim() || null;
+
+  const { db, pool } = makeDb(url);
+  try {
+    const where = [] as any[];
+    if (projectId) where.push(eq(runs.projectId, projectId));
+    if (taskId) where.push(eq(runs.taskId, taskId));
+
+    const rows = await db
+      .select()
+      .from(runs)
+      .where(where.length ? and(...where) : undefined)
+      .orderBy(desc(runs.createdAt), asc(runs.id))
+      .limit(200);
+
+    return NextResponse.json({ runs: rows });
+  } finally {
+    await pool.end();
+  }
+}
 
 export async function POST(req: Request) {
   const url = process.env.DATABASE_URL;

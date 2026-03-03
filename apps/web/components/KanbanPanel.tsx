@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useBasePath } from './useBasePath';
 import { useProject } from './ProjectContext';
+import { TaskDrawer } from './TaskDrawer';
 
 type TaskStatus = 'inbox' | 'planned' | 'in_progress' | 'blocked' | 'review' | 'done';
 
@@ -43,6 +44,7 @@ export function KanbanPanel() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [lastSync, setLastSync] = useState<number | null>(null);
+  const [openTask, setOpenTask] = useState<Task | null>(null);
 
   const refreshing = useRef(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -87,23 +89,24 @@ export function KanbanPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
-  // Project-level SSE stream (event-sourced-ish)
   useEffect(() => {
     setErr(null);
     const es = new EventSource(api.projectEvents(projectId));
 
     const onAny = () => {
-      // Any task/run event triggers a refresh (debounced).
       refreshDebounced();
     };
 
-    es.addEventListener('task.created', onAny);
-    es.addEventListener('task.updated', onAny);
-    es.addEventListener('task.status.changed', onAny);
-    es.addEventListener('run.created', onAny);
-    es.addEventListener('run.started', onAny);
-    es.addEventListener('run.completed', onAny);
-    es.addEventListener('run.failed', onAny);
+    const types = [
+      'task.created',
+      'task.updated',
+      'task.status.changed',
+      'run.created',
+      'run.started',
+      'run.completed',
+      'run.failed'
+    ];
+    for (const t of types) es.addEventListener(t, onAny);
 
     es.onerror = () => {
       setErr('SSE disconnected (project stream). Check nginx buffering/timeouts.');
@@ -183,8 +186,10 @@ export function KanbanPanel() {
                   key={t.id}
                   className="rounded-lg border border-matrix-500/15 bg-black/30 p-2 text-xs text-zinc-200"
                 >
-                  <div className="mb-1 line-clamp-2 text-sm text-zinc-100">{t.title}</div>
-                  {t.bodyMd ? <div className="mb-2 text-[11px] text-zinc-400">{t.bodyMd}</div> : null}
+                  <button onClick={() => setOpenTask(t)} className="block w-full text-left">
+                    <div className="mb-1 line-clamp-2 text-sm text-zinc-100 hover:underline">{t.title}</div>
+                    {t.bodyMd ? <div className="mb-2 text-[11px] text-zinc-400">{t.bodyMd}</div> : null}
+                  </button>
 
                   <div className="flex flex-wrap gap-2">
                     <button
@@ -222,6 +227,13 @@ export function KanbanPanel() {
           </div>
         ))}
       </div>
+
+      {openTask ? (
+        <TaskDrawer
+          task={{ id: openTask.id, title: openTask.title, bodyMd: openTask.bodyMd, status: openTask.status }}
+          onClose={() => setOpenTask(null)}
+        />
+      ) : null}
     </div>
   );
 }
