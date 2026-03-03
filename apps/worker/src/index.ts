@@ -2,7 +2,7 @@ import './env.js';
 
 import { and, eq, sql } from 'drizzle-orm';
 import { makeDb } from '@ocdash/db/client';
-import { events, runs, tasks } from '@ocdash/db/schema';
+import { artifacts, events, runs, tasks } from '@ocdash/db/schema';
 import { newId } from '@ocdash/shared';
 import type { OcdashEvent } from '@ocdash/shared';
 import { requireEnv } from './env.js';
@@ -44,13 +44,42 @@ async function getNextSeq(db: any, runId: string): Promise<number> {
   return (res?.[0]?.max ?? 0) + 1;
 }
 
-function clip(s: string, max = 6000) {
+function clipPreview(s: string, max = 900) {
   if (!s) return '';
   return s.length > max ? `${s.slice(0, max)}\n…(truncated)…` : s;
 }
 
+async function writeArtifact({
+  db,
+  projectId,
+  runId,
+  stepId,
+  kind,
+  name,
+  content
+}: {
+  db: any;
+  projectId: string;
+  runId: string;
+  stepId: string;
+  kind: string;
+  name: string;
+  content: string;
+}): Promise<string> {
+  const id = newId('art');
+  await db.insert(artifacts).values({
+    id,
+    projectId,
+    runId,
+    stepId,
+    kind,
+    name,
+    contentText: content
+  });
+  return id;
+}
+
 async function processRun(db: any, runId: string) {
-  // Load run metadata
   const runRows = await db.select().from(runs).where(eq(runs.id, runId)).limit(1);
   const runRow = runRows[0];
   const projectId = runRow?.projectId as string | undefined;
@@ -58,7 +87,6 @@ async function processRun(db: any, runId: string) {
 
   if (!projectId) throw new Error(`Run ${runId} missing projectId`);
 
-  // Load task (optional) to drive prompt
   let taskTitle = '';
   let taskBody = '';
   if (taskId) {
@@ -89,7 +117,6 @@ async function processRun(db: any, runId: string) {
     payload: { message: 'Run started' }
   });
 
-  // Step: opencode run (MVP)
   const stepId = 'stp_opencode_run';
 
   await appendEventRow(db, {
@@ -127,6 +154,56 @@ async function processRun(db: any, runId: string) {
 
   const result = await opencodeRun({ cwd: ws, message: msg });
 
+  // Store full logs as artifacts
+  const stdoutId = await writeArtifact({
+    db,
+    projectId,
+    runId,
+    stepId,
+    kind: 'stdout',
+    name: 'opencode stdout',
+    content: result.stdout ?? ''
+  });
+
+  const stderrId = await writeArtifact({
+    db,
+    projectId,
+    runId,
+    stepId,
+    kind: 'stderr',
+    name: 'opencode stderr',
+    content: result.stderr ?? ''
+  });
+
+  // Emit artifact.created events (project feed can show them later)
+  await appendEventRow(db, {
+    id: newId('evt'),
+    ts: nowIso(),
+    seq: seq++,
+    type: 'artifact.created',
+    source: 'worker',
+    severity: 'info',
+    project_id: projectId,
+    task_id: taskId ?? undefined,
+    run_id: runId,
+    step_id: stepId,
+    payload: { artifact: { id: stdoutId, kind: 'stdout', name: 'opencode stdout' } }
+  });
+
+  await appendEventRow(db, {
+    id: newId('evt'),
+    ts: nowIso(),
+    seq: seq++,
+    type: 'artifact.created',
+    source: 'worker',
+    severity: 'info',
+    project_id: projectId,
+    task_id: taskId ?? undefined,
+    run_id: runId,
+    step_id: stepId,
+    payload: { artifact: { id: stderrId, kind: 'stderr', name: 'opencode stderr' } }
+  });
+
   if (result.exitCode === 0) {
     await appendEventRow(db, {
       id: newId('evt'),
@@ -141,7 +218,13 @@ async function processRun(db: any, runId: string) {
       step_id: stepId,
       payload: {
         tool: 'opencode.run',
-        result: { exit_code: result.exitCode, stdout: clip(result.stdout), stderr: clip(result.stderr) }
+        result: {
+          exit_code: result.exitCode,
+          stdout_artifact_id: stdoutId,
+          stderr_artifact_id: stderrId,
+          stdout_preview: clipPreview(result.stdout ?? ''),
+          stderr_preview: clipPreview(result.stderr ?? '')
+        }
       }
     });
 
@@ -190,7 +273,13 @@ async function processRun(db: any, runId: string) {
       step_id: stepId,
       payload: {
         tool: 'opencode.run',
-        result: { exit_code: result.exitCode, stdout: clip(result.stdout), stderr: clip(result.stderr) }
+        result: {
+          exit_code: result.exitCode,
+          stdout_artifact_id: stdoutId,
+          stderr_artifact_id: stderrId,
+          stdout_preview: clipPreview(result.stdout ?? ''),
+          stderr_preview: clipPreview(result.stderr ?? '')
+        }
       }
     });
 

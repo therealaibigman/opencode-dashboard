@@ -25,11 +25,34 @@ function isToolCall(type: string) {
   return type === 'tool.call.requested' || type === 'tool.call.completed' || type === 'tool.call.failed';
 }
 
+type Artifact = {
+  id: string;
+  kind: string;
+  name: string;
+  content_text: string;
+};
+
 function ToolCallBlock({ e }: { e: Ev }) {
+  const BASE = useBasePath();
+
   const tool = e.payload?.tool ? String(e.payload.tool) : '(tool)';
   const exitCode = e.payload?.result?.exit_code;
-  const stdout = e.payload?.result?.stdout;
-  const stderr = e.payload?.result?.stderr;
+
+  const stdoutId = e.payload?.result?.stdout_artifact_id as string | undefined;
+  const stderrId = e.payload?.result?.stderr_artifact_id as string | undefined;
+
+  const stdoutPreview = e.payload?.result?.stdout_preview as string | undefined;
+  const stderrPreview = e.payload?.result?.stderr_preview as string | undefined;
+
+  const [stdout, setStdout] = useState<Artifact | null>(null);
+  const [stderr, setStderr] = useState<Artifact | null>(null);
+
+  async function loadArtifact(id: string, setter: (a: Artifact) => void) {
+    const res = await fetch(`${BASE}/api/artifacts/${encodeURIComponent(id)}`, { cache: 'no-store' });
+    if (!res.ok) return;
+    const data = (await res.json()) as { artifact: Artifact };
+    setter(data.artifact);
+  }
 
   return (
     <div className="mt-2 space-y-2">
@@ -44,21 +67,35 @@ function ToolCallBlock({ e }: { e: Ev }) {
         ) : null}
       </div>
 
-      {stdout ? (
-        <details className="rounded-lg border border-matrix-500/10 bg-black/25 p-2">
+      {stdoutId || stdoutPreview ? (
+        <details
+          className="rounded-lg border border-matrix-500/10 bg-black/25 p-2"
+          onToggle={(ev) => {
+            const open = (ev.target as HTMLDetailsElement).open;
+            if (open && stdoutId && !stdout) void loadArtifact(stdoutId, (a) => setStdout(a));
+          }}
+        >
           <summary className="cursor-pointer select-none text-[11px] text-zinc-200">stdout</summary>
           <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words text-[11px] text-zinc-200">
-            {String(stdout)}
+            {stdout?.content_text ?? stdoutPreview ?? ''}
           </pre>
+          {stdoutId ? <div className="mt-1 text-[10px] text-zinc-500">artifact: {stdoutId}</div> : null}
         </details>
       ) : null}
 
-      {stderr ? (
-        <details className="rounded-lg border border-red-500/20 bg-red-950/20 p-2">
+      {stderrId || stderrPreview ? (
+        <details
+          className="rounded-lg border border-red-500/20 bg-red-950/20 p-2"
+          onToggle={(ev) => {
+            const open = (ev.target as HTMLDetailsElement).open;
+            if (open && stderrId && !stderr) void loadArtifact(stderrId, (a) => setStderr(a));
+          }}
+        >
           <summary className="cursor-pointer select-none text-[11px] text-red-100">stderr</summary>
           <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words text-[11px] text-red-100">
-            {String(stderr)}
+            {stderr?.content_text ?? stderrPreview ?? ''}
           </pre>
+          {stderrId ? <div className="mt-1 text-[10px] text-red-200/70">artifact: {stderrId}</div> : null}
         </details>
       ) : null}
     </div>

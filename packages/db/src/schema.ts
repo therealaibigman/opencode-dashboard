@@ -71,6 +71,26 @@ export const runs = pgTable(
   })
 );
 
+export const artifacts = pgTable(
+  'artifacts',
+  {
+    id: text('id').primaryKey(),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    runId: text('run_id').references(() => runs.id, { onDelete: 'cascade' }),
+    stepId: text('step_id'),
+    kind: text('kind').notNull(), // e.g. stdout, stderr, diff, patch
+    name: text('name').notNull(),
+    contentText: text('content_text').notNull().default(''),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (a) => ({
+    runIdx: index('artifacts_run_idx').on(a.runId),
+    projectIdx: index('artifacts_project_idx').on(a.projectId)
+  })
+);
+
 export const events = pgTable(
   'events',
   {
@@ -94,6 +114,7 @@ export const events = pgTable(
   },
   (e) => ({
     runSeqIdx: index('events_run_seq_idx').on(e.runId, e.seq),
-    runTsIdx: index('events_run_ts_idx').on(e.runId, e.ts)
+    runTsIdx: index('events_run_ts_idx').on(e.runId, e.ts),
+    projectTsIdx: index('events_project_ts_idx').on(e.projectId, e.ts)
   })
 );
