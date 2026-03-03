@@ -14,7 +14,7 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-async function appendRunEvent(db: any, ev: OcdashEvent) {
+async function appendEventRow(db: any, ev: OcdashEvent) {
   await db.insert(events).values({
     id: ev.id,
     ts: new Date(ev.ts),
@@ -41,6 +41,12 @@ async function getNextSeq(db: any, runId: string): Promise<number> {
 }
 
 async function processRun(db: any, runId: string) {
+  // Load run metadata for project-level feeds
+  const runRows = await db.select().from(runs).where(eq(runs.id, runId)).limit(1);
+  const runRow = runRows[0];
+  const projectId = runRow?.projectId as string | undefined;
+  const taskId = (runRow?.taskId as string | null | undefined) ?? null;
+
   await db
     .update(runs)
     .set({ status: 'running', startedAt: new Date() })
@@ -48,26 +54,30 @@ async function processRun(db: any, runId: string) {
 
   let seq = await getNextSeq(db, runId);
 
-  await appendRunEvent(db, {
+  await appendEventRow(db, {
     id: newId('evt'),
     ts: nowIso(),
     seq: seq++,
     type: 'run.started',
     source: 'worker',
     severity: 'info',
+    project_id: projectId,
+    task_id: taskId ?? undefined,
     run_id: runId,
     payload: { message: 'Run started' }
   });
 
   const steps = ['plan', 'implement', 'test', 'review'] as const;
   for (const step of steps) {
-    await appendRunEvent(db, {
+    await appendEventRow(db, {
       id: newId('evt'),
       ts: nowIso(),
       seq: seq++,
       type: 'run.step.started',
       source: 'worker',
       severity: 'info',
+      project_id: projectId,
+      task_id: taskId ?? undefined,
       run_id: runId,
       step_id: `stp_${step}`,
       payload: { step: { name: step, kind: 'llm' }, message: `Starting ${step}` }
@@ -75,39 +85,45 @@ async function processRun(db: any, runId: string) {
 
     for (let p = 0; p <= 100; p += 20) {
       await new Promise((r) => setTimeout(r, 250));
-      await appendRunEvent(db, {
+      await appendEventRow(db, {
         id: newId('evt'),
         ts: nowIso(),
         seq: seq++,
         type: 'run.step.progress',
         source: 'worker',
         severity: 'info',
+        project_id: projectId,
+        task_id: taskId ?? undefined,
         run_id: runId,
         step_id: `stp_${step}`,
         payload: { step: { name: step }, percent: p, message: `${step}: ${p}%` }
       });
     }
 
-    await appendRunEvent(db, {
+    await appendEventRow(db, {
       id: newId('evt'),
       ts: nowIso(),
       seq: seq++,
       type: 'run.step.completed',
       source: 'worker',
       severity: 'info',
+      project_id: projectId,
+      task_id: taskId ?? undefined,
       run_id: runId,
       step_id: `stp_${step}`,
       payload: { step: { name: step }, message: `${step} done` }
     });
   }
 
-  await appendRunEvent(db, {
+  await appendEventRow(db, {
     id: newId('evt'),
     ts: nowIso(),
     seq: seq++,
     type: 'run.completed',
     source: 'worker',
     severity: 'info',
+    project_id: projectId,
+    task_id: taskId ?? undefined,
     run_id: runId,
     payload: { message: 'Run completed (demo pipeline)' }
   });
