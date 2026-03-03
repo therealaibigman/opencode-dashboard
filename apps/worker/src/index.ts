@@ -2,13 +2,17 @@ import './env.js';
 
 import { and, eq, sql } from 'drizzle-orm';
 import { makeDb } from '@ocdash/db/client';
-import { events, runs } from '@ocdash/db/schema';
+import { events, runs, tasks } from '@ocdash/db/schema';
 import { newId } from '@ocdash/shared';
 import type { OcdashEvent } from '@ocdash/shared';
 import { requireEnv } from './env.js';
+import { ensureProjectWorkspace } from './workspaces.js';
+import { opencodeRun } from './opencode.js';
 
 const DATABASE_URL = requireEnv('DATABASE_URL');
 const POLL_MS = Number(process.env.WORKER_POLL_INTERVAL_MS ?? '750');
+
+const WORKSPACES_ROOT = process.env.PROJECT_WORKSPACES_ROOT ?? '/home/exedev/.openclaw/workspace/opencode-workspaces';
 
 function nowIso() {
   return new Date().toISOString();
@@ -40,12 +44,30 @@ async function getNextSeq(db: any, runId: string): Promise<number> {
   return (res?.[0]?.max ?? 0) + 1;
 }
 
+function clip(s: string, max = 6000) {
+  if (!s) return '';
+  return s.length > max ? `${s.slice(0, max)}\n…(truncated)…` : s;
+}
+
 async function processRun(db: any, runId: string) {
-  // Load run metadata for project-level feeds
+  // Load run metadata
   const runRows = await db.select().from(runs).where(eq(runs.id, runId)).limit(1);
   const runRow = runRows[0];
   const projectId = runRow?.projectId as string | undefined;
   const taskId = (runRow?.taskId as string | null | undefined) ?? null;
+
+  if (!projectId) throw new Error(`Run ${runId} missing projectId`);
+
+  // Load task (optional) to drive prompt
+  let taskTitle = '';
+  let taskBody = '';
+  if (taskId) {
+    const trows = await db.select().from(tasks).where(eq(tasks.id, taskId)).limit(1);
+    if (trows.length) {
+      taskTitle = trows[0]!.title;
+      taskBody = trows[0]!.bodyMd;
+    }
+  }
 
   await db
     .update(runs)
@@ -67,38 +89,61 @@ async function processRun(db: any, runId: string) {
     payload: { message: 'Run started' }
   });
 
-  const steps = ['plan', 'implement', 'test', 'review'] as const;
-  for (const step of steps) {
+  // Step: opencode run (MVP)
+  const stepId = 'stp_opencode_run';
+
+  await appendEventRow(db, {
+    id: newId('evt'),
+    ts: nowIso(),
+    seq: seq++,
+    type: 'run.step.started',
+    source: 'worker',
+    severity: 'info',
+    project_id: projectId,
+    task_id: taskId ?? undefined,
+    run_id: runId,
+    step_id: stepId,
+    payload: { step: { name: 'opencode.run', kind: 'tool' }, message: 'Running OpenCode' }
+  });
+
+  const ws = await ensureProjectWorkspace({ root: WORKSPACES_ROOT, projectId });
+  const msg = taskId
+    ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}\n\nDo the next best action. If code changes are needed, explain what you would change.`
+    : `Project ${projectId}: Do the next best action.`;
+
+  await appendEventRow(db, {
+    id: newId('evt'),
+    ts: nowIso(),
+    seq: seq++,
+    type: 'tool.call.requested',
+    source: 'worker',
+    severity: 'info',
+    project_id: projectId,
+    task_id: taskId ?? undefined,
+    run_id: runId,
+    step_id: stepId,
+    payload: { tool: 'opencode.run', args: { cwd: ws, message: taskId ? taskTitle : '(no task)' } }
+  });
+
+  const result = await opencodeRun({ cwd: ws, message: msg });
+
+  if (result.exitCode === 0) {
     await appendEventRow(db, {
       id: newId('evt'),
       ts: nowIso(),
       seq: seq++,
-      type: 'run.step.started',
+      type: 'tool.call.completed',
       source: 'worker',
       severity: 'info',
       project_id: projectId,
       task_id: taskId ?? undefined,
       run_id: runId,
-      step_id: `stp_${step}`,
-      payload: { step: { name: step, kind: 'llm' }, message: `Starting ${step}` }
+      step_id: stepId,
+      payload: {
+        tool: 'opencode.run',
+        result: { exit_code: result.exitCode, stdout: clip(result.stdout), stderr: clip(result.stderr) }
+      }
     });
-
-    for (let p = 0; p <= 100; p += 20) {
-      await new Promise((r) => setTimeout(r, 250));
-      await appendEventRow(db, {
-        id: newId('evt'),
-        ts: nowIso(),
-        seq: seq++,
-        type: 'run.step.progress',
-        source: 'worker',
-        severity: 'info',
-        project_id: projectId,
-        task_id: taskId ?? undefined,
-        run_id: runId,
-        step_id: `stp_${step}`,
-        payload: { step: { name: step }, percent: p, message: `${step}: ${p}%` }
-      });
-    }
 
     await appendEventRow(db, {
       id: newId('evt'),
@@ -110,28 +155,74 @@ async function processRun(db: any, runId: string) {
       project_id: projectId,
       task_id: taskId ?? undefined,
       run_id: runId,
-      step_id: `stp_${step}`,
-      payload: { step: { name: step }, message: `${step} done` }
+      step_id: stepId,
+      payload: { step: { name: 'opencode.run' }, message: 'OpenCode run finished' }
     });
+
+    await appendEventRow(db, {
+      id: newId('evt'),
+      ts: nowIso(),
+      seq: seq++,
+      type: 'run.completed',
+      source: 'worker',
+      severity: 'info',
+      project_id: projectId,
+      task_id: taskId ?? undefined,
+      run_id: runId,
+      payload: { message: 'Run completed (opencode)' }
+    });
+
+    await db
+      .update(runs)
+      .set({ status: 'succeeded', finishedAt: new Date() })
+      .where(eq(runs.id, runId));
+  } else {
+    await appendEventRow(db, {
+      id: newId('evt'),
+      ts: nowIso(),
+      seq: seq++,
+      type: 'tool.call.failed',
+      source: 'worker',
+      severity: 'error',
+      project_id: projectId,
+      task_id: taskId ?? undefined,
+      run_id: runId,
+      step_id: stepId,
+      payload: {
+        tool: 'opencode.run',
+        result: { exit_code: result.exitCode, stdout: clip(result.stdout), stderr: clip(result.stderr) }
+      }
+    });
+
+    await appendEventRow(db, {
+      id: newId('evt'),
+      ts: nowIso(),
+      seq: seq++,
+      type: 'run.step.failed',
+      source: 'worker',
+      severity: 'error',
+      project_id: projectId,
+      task_id: taskId ?? undefined,
+      run_id: runId,
+      step_id: stepId,
+      payload: { step: { name: 'opencode.run' }, message: 'OpenCode run failed' }
+    });
+
+    await appendEventRow(db, {
+      id: newId('evt'),
+      ts: nowIso(),
+      seq: seq++,
+      type: 'run.failed',
+      source: 'worker',
+      severity: 'error',
+      project_id: projectId,
+      task_id: taskId ?? undefined,
+      run_id: runId,
+      payload: { message: 'Run failed (opencode)' }
+    });
+
+    await db.update(runs).set({ status: 'failed', finishedAt: new Date() }).where(eq(runs.id, runId));
   }
-
-  await appendEventRow(db, {
-    id: newId('evt'),
-    ts: nowIso(),
-    seq: seq++,
-    type: 'run.completed',
-    source: 'worker',
-    severity: 'info',
-    project_id: projectId,
-    task_id: taskId ?? undefined,
-    run_id: runId,
-    payload: { message: 'Run completed (demo pipeline)' }
-  });
-
-  await db
-    .update(runs)
-    .set({ status: 'succeeded', finishedAt: new Date() })
-    .where(eq(runs.id, runId));
 }
 
 async function main() {
