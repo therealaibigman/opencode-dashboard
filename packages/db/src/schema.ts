@@ -5,7 +5,8 @@ import {
   integer,
   jsonb,
   pgEnum,
-  index
+  index,
+  doublePrecision
 } from 'drizzle-orm/pg-core';
 
 export const taskStatusEnum = pgEnum('task_status', [
@@ -51,6 +52,10 @@ export const tasks = pgTable(
     bodyMd: text('body_md').notNull().default(''),
     status: taskStatusEnum('status').notNull().default('inbox'),
 
+    // Stable ordering inside a status column.
+    // Uses float positions to allow cheap "insert between" during drag-drop.
+    position: doublePrecision('position').notNull().default(0),
+
     archivedAt: timestamp('archived_at', { withTimezone: true }),
 
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -59,7 +64,8 @@ export const tasks = pgTable(
   (t) => ({
     projectIdx: index('tasks_project_idx').on(t.projectId),
     statusIdx: index('tasks_status_idx').on(t.status),
-    archivedIdx: index('tasks_archived_idx').on(t.archivedAt)
+    archivedIdx: index('tasks_archived_idx').on(t.archivedAt),
+    orderingIdx: index('tasks_ordering_idx').on(t.projectId, t.status, t.position)
   })
 );
 

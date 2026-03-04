@@ -36,6 +36,13 @@
       "when": 1772635685642,
       "tag": "0004_yummy_doctor_octopus",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1772638371325,
+      "tag": "0005_perfect_loa",
+      "breakpoints": true
     }
   ]
 }

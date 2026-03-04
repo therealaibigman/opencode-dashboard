@@ -6,10 +6,7 @@ import { appendProjectEvent } from '../../_lib/eventlog';
 
 export const runtime = 'nodejs';
 
-export async function PATCH(
-  req: Request,
-  { params }: { params: Promise<{ taskId: string }> }
-) {
+export async function PATCH(req: Request, { params }: { params: Promise<{ taskId: string }> }) {
   const { taskId } = await params;
   const url = process.env.DATABASE_URL;
   if (!url) return NextResponse.json({ error: 'DATABASE_URL missing' }, { status: 500 });
@@ -18,6 +15,7 @@ export async function PATCH(
     status?: 'inbox' | 'planned' | 'in_progress' | 'blocked' | 'review' | 'done';
     title?: string;
     body_md?: string;
+    position?: number;
     archived?: boolean;
     archived_at?: string | null;
   };
@@ -31,6 +29,10 @@ export async function PATCH(
     if (body.status) patch.status = body.status;
     if (typeof body.title === 'string') patch.title = body.title;
     if (typeof body.body_md === 'string') patch.bodyMd = body.body_md;
+
+    if (typeof body.position === 'number' && Number.isFinite(body.position)) {
+      patch.position = body.position;
+    }
 
     if (typeof body.archived === 'boolean') {
       patch.archivedAt = body.archived ? new Date() : null;

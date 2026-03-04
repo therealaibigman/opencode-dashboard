@@ -14,8 +14,7 @@ import {
 import {
   SortableContext,
   useSortable,
-  verticalListSortingStrategy,
-  arrayMove
+  verticalListSortingStrategy
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 
@@ -31,6 +30,7 @@ type Task = {
   title: string;
   bodyMd: string;
   status: TaskStatus;
+  position: number;
   archivedAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -73,6 +73,23 @@ function parseColId(id: string): TaskStatus | null {
   return id.slice('col:'.length) as TaskStatus;
 }
 
+function sortInCol(ts: Task[]) {
+  return [...ts].sort((a, b) => {
+    const ap = Number.isFinite(a.position) ? a.position : 0;
+    const bp = Number.isFinite(b.position) ? b.position : 0;
+    if (ap !== bp) return ap - bp;
+    return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+  });
+}
+
+function posBetween(prev: number | null, next: number | null) {
+  if (prev === null && next === null) return 0;
+  if (prev === null) return (next ?? 0) - 1;
+  if (next === null) return (prev ?? 0) + 1;
+  if (prev === next) return prev + 1;
+  return prev + (next - prev) / 2;
+}
+
 function TaskCard({
   t,
   onOpen,
@@ -86,14 +103,9 @@ function TaskCard({
   onMoveRight: () => void;
   onQueue: () => void;
 }) {
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-    isDragging
-  } = useSortable({ id: taskIdToDndId(t.id) });
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: taskIdToDndId(t.id)
+  });
 
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -110,13 +122,8 @@ function TaskCard({
           : 'min-w-0 rounded-lg border border-matrix-500/15 bg-black/30 p-2 text-xs text-zinc-200'
       }
     >
-      <button
-        onClick={onOpen}
-        className="block w-full min-w-0 text-left"
-      >
-        <div className="mb-1 min-w-0 line-clamp-2 break-words text-sm text-zinc-100 hover:underline">
-          {t.title}
-        </div>
+      <button onClick={onOpen} className="block w-full min-w-0 text-left">
+        <div className="mb-1 min-w-0 line-clamp-2 break-words text-sm text-zinc-100 hover:underline">{t.title}</div>
         {t.bodyMd ? (
           <div className="mb-2 min-w-0 line-clamp-3 break-words text-[11px] text-zinc-400">{t.bodyMd}</div>
         ) : null}
@@ -145,7 +152,6 @@ function TaskCard({
         </button>
 
         <button
-          // Drag handle
           {...attributes}
           {...listeners}
           className="ml-auto cursor-grab rounded-md bg-black/25 px-2 py-1 text-[11px] text-zinc-200 ring-1 ring-matrix-500/15 hover:bg-black/35 active:cursor-grabbing"
@@ -257,22 +263,20 @@ export function KanbanPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, api.projectEvents]);
 
-  async function moveTask(t: Task, dir: -1 | 1) {
-    const to = nextStatus(t.status, dir);
-    await fetch(api.patchTask(t.id), {
-      method: 'PATCH',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ status: to })
-    });
-    refreshDebounced();
-  }
-
-  async function setTaskStatus(taskId: string, to: TaskStatus) {
+  async function patchTask(taskId: string, patch: Partial<Pick<Task, 'status' | 'position'>> & { archived?: boolean }) {
     await fetch(api.patchTask(taskId), {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ status: to })
+      body: JSON.stringify(patch)
     });
+  }
+
+  async function moveTask(t: Task, dir: -1 | 1) {
+    const to = nextStatus(t.status, dir);
+    const tasksInTo = sortInCol(tasks.filter((x) => x.status === to));
+    const last = tasksInTo.length ? tasksInTo[tasksInTo.length - 1]!.position : 0;
+    await patchTask(t.id, { status: to, position: last + 1 });
+    refreshDebounced();
   }
 
   async function queueRun(t: Task) {
@@ -291,11 +295,7 @@ export function KanbanPanel() {
   }
 
   async function restoreTask(t: Task) {
-    await fetch(api.patchTask(t.id), {
-      method: 'PATCH',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ archived: false, status: 'inbox' })
-    });
+    await patchTask(t.id, { archived: false, status: 'inbox', position: 0 });
     refreshDebounced();
   }
 
@@ -305,6 +305,7 @@ export function KanbanPanel() {
   }, {} as Record<TaskStatus, Task[]>);
 
   for (const t of tasks) by[t.status]?.push(t);
+  for (const k of Object.keys(by) as TaskStatus[]) by[k] = sortInCol(by[k]);
 
   const activeTask = activeTaskId ? tasks.find((t) => t.id === activeTaskId) ?? null : null;
 
@@ -317,37 +318,20 @@ export function KanbanPanel() {
     const tid = dndIdToTaskId(activeId);
     if (!tid || !overId) return;
 
-    // If dropped over a column, change status.
+    const moving = tasks.find((x) => x.id === tid);
+    if (!moving) return;
+
+    // Dropped over a column -> move to end of that column.
     const overCol = parseColId(overId);
     if (overCol) {
-      const t = tasks.find((x) => x.id === tid);
-      if (t && t.status !== overCol) {
-        // optimistic
-        setTasks((prev) => prev.map((x) => (x.id === tid ? { ...x, status: overCol } : x)));
-        try {
-          await setTaskStatus(tid, overCol);
-        } catch (e: any) {
-          setErr(String(e?.message ?? e));
-        } finally {
-          refreshDebounced();
-        }
-      }
-      return;
-    }
+      const toCol = overCol;
+      const colTasks = sortInCol(tasks.filter((x) => x.status === toCol && x.id !== tid));
+      const last = colTasks.length ? colTasks[colTasks.length - 1]!.position : 0;
+      const newPos = last + 1;
 
-    // Dropped over another task: reorder within same column (client-only for now)
-    const overTid = dndIdToTaskId(overId);
-    if (!overTid) return;
-
-    const a = tasks.find((x) => x.id === tid);
-    const b = tasks.find((x) => x.id === overTid);
-    if (!a || !b) return;
-
-    if (a.status !== b.status) {
-      // treat as cross-column move
-      setTasks((prev) => prev.map((x) => (x.id === tid ? { ...x, status: b.status } : x)));
+      setTasks((prev) => prev.map((x) => (x.id === tid ? { ...x, status: toCol, position: newPos } : x)));
       try {
-        await setTaskStatus(tid, b.status);
+        await patchTask(tid, { status: toCol, position: newPos });
       } catch (e: any) {
         setErr(String(e?.message ?? e));
       } finally {
@@ -356,18 +340,36 @@ export function KanbanPanel() {
       return;
     }
 
-    const idsInCol = tasks.filter((x) => x.status === a.status).map((x) => x.id);
-    const oldIndex = idsInCol.indexOf(tid);
-    const newIndex = idsInCol.indexOf(overTid);
-    if (oldIndex < 0 || newIndex < 0 || oldIndex === newIndex) return;
+    const overTid = dndIdToTaskId(overId);
+    if (!overTid) return;
 
-    const movedIds = arrayMove(idsInCol, oldIndex, newIndex);
-    setTasks((prev) => {
-      const others = prev.filter((x) => x.status !== a.status);
-      const inCol = prev.filter((x) => x.status === a.status);
-      const map = new Map(inCol.map((x) => [x.id, x] as const));
-      return [...others, ...movedIds.map((id) => map.get(id)!)];
-    });
+    const over = tasks.find((x) => x.id === overTid);
+    if (!over) return;
+
+    const toCol = over.status;
+
+    // Build target column list excluding moving task.
+    const colTasks = sortInCol(tasks.filter((x) => x.status === toCol && x.id !== tid));
+    const overIndex = colTasks.findIndex((x) => x.id === overTid);
+    if (overIndex < 0) return;
+
+    // Determine insertion index (place before the hovered card).
+    const insertIndex = overIndex;
+    const prev = insertIndex > 0 ? colTasks[insertIndex - 1]!.position : null;
+    const next = colTasks[insertIndex] ? colTasks[insertIndex]!.position : null;
+    const newPos = posBetween(prev, next);
+
+    setTasks((prevTasks) =>
+      prevTasks.map((x) => (x.id === tid ? { ...x, status: toCol, position: newPos } : x))
+    );
+
+    try {
+      await patchTask(tid, { status: toCol, position: newPos });
+    } catch (e: any) {
+      setErr(String(e?.message ?? e));
+    } finally {
+      refreshDebounced();
+    }
   }
 
   return (
@@ -375,9 +377,7 @@ export function KanbanPanel() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div className="space-y-2">
           <div className="text-xs text-zinc-300">Project</div>
-          <div className="rounded-lg border border-matrix-500/20 bg-black/25 px-3 py-2 text-sm text-zinc-100">
-            {projectId}
-          </div>
+          <div className="rounded-lg border border-matrix-500/20 bg-black/25 px-3 py-2 text-sm text-zinc-100">{projectId}</div>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -389,11 +389,7 @@ export function KanbanPanel() {
           </button>
 
           <label className="flex items-center gap-2 rounded-lg bg-black/15 px-3 py-2 text-sm text-zinc-200 ring-1 ring-matrix-500/15">
-            <input
-              type="checkbox"
-              checked={showArchived}
-              onChange={(e) => setShowArchived(e.target.checked)}
-            />
+            <input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} />
             Show archived ({archived.length})
           </label>
 
@@ -403,11 +399,7 @@ export function KanbanPanel() {
         </div>
       </div>
 
-      {err && (
-        <div className="rounded-xl border border-red-500/30 bg-red-950/30 p-3 text-sm text-red-100">
-          {err}
-        </div>
-      )}
+      {err && <div className="rounded-xl border border-red-500/30 bg-red-950/30 p-3 text-sm text-red-100">{err}</div>}
 
       <DndContext
         sensors={sensors}
@@ -422,20 +414,13 @@ export function KanbanPanel() {
           {COLS.map((c) => {
             const tasksInCol = by[c.key] ?? [];
             return (
-              <div
-                key={c.key}
-                id={colId(c.key)}
-                className="rounded-xl border border-matrix-500/15 bg-black/15 p-3"
-              >
+              <div key={c.key} id={colId(c.key)} className="rounded-xl border border-matrix-500/15 bg-black/15 p-3">
                 <div className="mb-2 flex items-center justify-between">
                   <div className="text-xs font-medium text-matrix-200/90">{c.label}</div>
                   <div className="text-[11px] text-zinc-400">{tasksInCol.length}</div>
                 </div>
 
-                <SortableContext
-                  items={tasksInCol.map((t) => taskIdToDndId(t.id))}
-                  strategy={verticalListSortingStrategy}
-                >
+                <SortableContext items={tasksInCol.map((t) => taskIdToDndId(t.id))} strategy={verticalListSortingStrategy}>
                   <div id={colId(c.key)} className="space-y-2">
                     {tasksInCol.map((t) => (
                       <TaskCard
@@ -449,9 +434,7 @@ export function KanbanPanel() {
                     ))}
 
                     {tasksInCol.length === 0 ? (
-                      <div className="rounded-lg border border-matrix-500/10 bg-black/20 p-2 text-[11px] text-zinc-400">
-                        Empty
-                      </div>
+                      <div className="rounded-lg border border-matrix-500/10 bg-black/20 p-2 text-[11px] text-zinc-400">Empty</div>
                     ) : null}
                   </div>
                 </SortableContext>

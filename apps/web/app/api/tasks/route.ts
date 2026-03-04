@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { and, asc, desc, eq, isNull } from 'drizzle-orm';
+import { and, asc, desc, eq, isNull, sql } from 'drizzle-orm';
 import { makeDb } from '@ocdash/db/client';
 import { tasks } from '@ocdash/db/schema';
 import { newId } from '@ocdash/shared';
@@ -27,7 +27,7 @@ export async function GET(req: Request) {
       .select()
       .from(tasks)
       .where(where)
-      .orderBy(desc(tasks.updatedAt), asc(tasks.createdAt))
+      .orderBy(asc(tasks.status), asc(tasks.position), desc(tasks.updatedAt), asc(tasks.createdAt))
       .limit(500);
 
     return NextResponse.json({ tasks: rows });
@@ -59,12 +59,21 @@ export async function POST(req: Request) {
 
   const { db, pool } = makeDb(url);
   try {
+    // Put new tasks at the end of their column.
+    const [{ maxPos }] = await db
+      .select({ maxPos: sql<number | null>`max(${tasks.position})` })
+      .from(tasks)
+      .where(and(eq(tasks.projectId, projectId), eq(tasks.status, status), isNull(tasks.archivedAt)));
+
+    const position = (Number.isFinite(maxPos as any) ? Number(maxPos) : 0) + 1;
+
     await db.insert(tasks).values({
       id,
       projectId,
       title,
       bodyMd,
       status,
+      position,
       updatedAt: new Date()
     });
 
@@ -73,10 +82,13 @@ export async function POST(req: Request) {
       projectId,
       taskId: id,
       type: 'task.created',
-      payload: { task: { id, project_id: projectId, title, body_md: bodyMd, status } }
+      payload: { task: { id, project_id: projectId, title, body_md: bodyMd, status, position } }
     });
 
-    return NextResponse.json({ task: { id, project_id: projectId, title, body_md: bodyMd, status } }, { status: 201 });
+    return NextResponse.json(
+      { task: { id, project_id: projectId, title, body_md: bodyMd, status, position } },
+      { status: 201 }
+    );
   } finally {
     await pool.end();
   }
