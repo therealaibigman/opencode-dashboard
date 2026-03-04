@@ -17,9 +17,11 @@ type ApprovalRequested = {
   project_id?: string;
   run_id?: string;
   task_id?: string;
-  payload?: { reason?: string; patch_artifact_id?: string };
+  payload?: { reason?: string; patch_artifact_id?: string; plan_artifact_id?: string };
 };
 
+
+type RunMeta = { run: { id: string; kind: 'execute' | 'plan'; status: string } };
 export function AppShell({ title, children }: { title?: string; children: React.ReactNode }) {
   const BASE = useBasePath();
   const router = useRouter();
@@ -43,6 +45,7 @@ export function AppShell({ title, children }: { title?: string; children: React.
 
   // approval modal state
   const [approval, setApproval] = useState<ApprovalRequested | null>(null);
+  const [approvalKind, setApprovalKind] = useState<'execute' | 'plan' | null>(null);
   const [approvalErr, setApprovalErr] = useState<string | null>(null);
   const [approvalBusy, setApprovalBusy] = useState<'approve' | 'reject' | null>(null);
 
@@ -59,8 +62,11 @@ export function AppShell({ title, children }: { title?: string; children: React.
         const base = `${BASE}/api/projects/${encodeURIComponent(id)}/events/stream`;
         return afterTs ? `${base}?after_ts=${encodeURIComponent(afterTs)}` : base;
       },
+      run: (runId: string) => `${BASE}/api/runs/${encodeURIComponent(runId)}` ,
       approveRun: (runId: string) => `${BASE}/api/runs/${encodeURIComponent(runId)}/approve`,
-      rejectRun: (runId: string) => `${BASE}/api/runs/${encodeURIComponent(runId)}/reject`
+      rejectRun: (runId: string) => `${BASE}/api/runs/${encodeURIComponent(runId)}/reject`,
+      approvePlan: (runId: string) => `${BASE}/api/runs/${encodeURIComponent(runId)}/approve-plan`,
+      rejectPlan: (runId: string) => `${BASE}/api/runs/${encodeURIComponent(runId)}/reject-plan`
     }),
     [BASE]
   );
@@ -234,6 +240,16 @@ export function AppShell({ title, children }: { title?: string; children: React.
         setApprovalErr(null);
         setApprovalBusy(null);
         setApproval(data);
+        setApprovalKind(null);
+
+        void (async () => {
+          try {
+            const meta = await j<RunMeta>(await fetch(api.run(runId), { cache: 'no-store' }));
+            setApprovalKind(meta.run.kind);
+          } catch {
+            setApprovalKind(data.payload?.plan_artifact_id ? 'plan' : 'execute');
+          }
+        })();
       } catch {
         // ignore
       }
@@ -258,8 +274,16 @@ export function AppShell({ title, children }: { title?: string; children: React.
     setApprovalErr(null);
     setApprovalBusy('approve');
     try {
-      await j(await fetch(api.approveRun(runId), { method: 'POST' }));
-      setApproval(null);
+      if (approvalKind === 'plan' || approval?.payload?.plan_artifact_id) {
+        const data = await j<{ ok: boolean; execute_run_id: string }>(
+          await fetch(api.approvePlan(runId), { method: 'POST' })
+        );
+        setApproval(null);
+        router.push(`/runs/${encodeURIComponent(data.execute_run_id)}`);
+      } else {
+        await j(await fetch(api.approveRun(runId), { method: 'POST' }));
+        setApproval(null);
+      }
     } catch (e: any) {
       const msg = String(e?.message ?? e);
       if (msg.includes('needs_approval')) setApproval(null);
@@ -275,13 +299,23 @@ export function AppShell({ title, children }: { title?: string; children: React.
     setApprovalErr(null);
     setApprovalBusy('reject');
     try {
-      await j(
-        await fetch(api.rejectRun(runId), {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ reason: 'Rejected in modal' })
-        })
-      );
+      if (approvalKind === 'plan' || approval?.payload?.plan_artifact_id) {
+        await j(
+          await fetch(api.rejectPlan(runId), {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ reason: 'Rejected in modal' })
+          })
+        );
+      } else {
+        await j(
+          await fetch(api.rejectRun(runId), {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ reason: 'Rejected in modal' })
+          })
+        );
+      }
       setApproval(null);
     } catch (e: any) {
       const msg = String(e?.message ?? e);
@@ -436,6 +470,9 @@ export function AppShell({ title, children }: { title?: string; children: React.
             {approval.payload?.patch_artifact_id ? (
               <div className="mt-1 break-all text-[11px] text-zinc-400">patch artifact: {approval.payload.patch_artifact_id}</div>
             ) : null}
+            {approval.payload?.plan_artifact_id ? (
+              <div className="mt-1 break-all text-[11px] text-zinc-400">plan artifact: {approval.payload.plan_artifact_id}</div>
+            ) : null}
 
             {approvalErr ? (
               <div className="mt-3 rounded-lg border border-red-500/30 bg-red-950/30 p-2 text-xs text-red-100">{approvalErr}</div>
@@ -474,7 +511,11 @@ export function AppShell({ title, children }: { title?: string; children: React.
                 disabled={approvalBusy !== null || !approval.run_id}
                 className="rounded-lg bg-yellow-500/15 px-3 py-2 text-sm text-yellow-100 ring-1 ring-yellow-500/30 hover:bg-yellow-500/20 disabled:opacity-60"
               >
-                {approvalBusy === 'approve' ? 'Approving…' : 'Approve + Apply + Commit'}
+                {approvalBusy === 'approve'
+                  ? 'Approving…'
+                  : approvalKind === 'plan' || approval?.payload?.plan_artifact_id
+                    ? 'Approve plan → Execute'
+                    : 'Approve + Apply + Commit'}
               </button>
             </div>
           </div>

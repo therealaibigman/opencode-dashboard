@@ -29,6 +29,13 @@ type ArtifactStub = {
 
 type ArtifactFull = ArtifactStub & { content_text: string };
 
+type PlanJson = {
+  summary?: string;
+  steps?: { title?: string; details?: string; risk?: 'low' | 'med' | 'high' }[];
+  files?: string[];
+  commands?: string[];
+};
+
 async function j<T>(res: Response): Promise<T> {
   if (!res.ok) throw new Error(await res.text());
   return (await res.json()) as T;
@@ -47,6 +54,115 @@ function canCancel(status: string | null | undefined) {
 
 function isActive(status: string | null | undefined) {
   return status === 'queued' || status === 'running' || status === 'needs_approval';
+}
+
+function RiskTag({ risk }: { risk: string }) {
+  const cls =
+    risk === 'high'
+      ? 'bg-red-500/15 text-red-100 ring-red-500/30'
+      : risk === 'med'
+        ? 'bg-yellow-500/15 text-yellow-100 ring-yellow-500/30'
+        : 'bg-matrix-500/15 text-matrix-100 ring-matrix-500/30';
+
+  return <span className={`rounded-full px-2 py-1 text-[11px] ring-1 ${cls}`}>{risk}</span>;
+}
+
+function PlanViewer({ planText }: { planText: string }) {
+  let plan: PlanJson | null = null;
+  let parseErr: string | null = null;
+
+  try {
+    plan = JSON.parse(planText) as PlanJson;
+  } catch (e: any) {
+    parseErr = String(e?.message ?? e);
+  }
+
+  if (!plan) {
+    return (
+      <div>
+        <div className="mb-2 text-xs text-zinc-400">Plan JSON (raw)</div>
+        {parseErr ? (
+          <div className="mb-2 rounded-lg border border-red-500/30 bg-red-950/30 p-2 text-xs text-red-100">
+            JSON parse failed: {parseErr}
+          </div>
+        ) : null}
+        <pre className="max-h-[360px] overflow-auto whitespace-pre-wrap break-words text-[11px] text-zinc-200">
+          {planText}
+        </pre>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <div className="mb-1 text-xs font-medium text-matrix-200/90">Summary</div>
+        <div className="text-sm text-zinc-100">{plan.summary || '—'}</div>
+      </div>
+
+      <div>
+        <div className="mb-2 text-xs font-medium text-matrix-200/90">Steps</div>
+        {!plan.steps?.length ? (
+          <div className="text-[11px] text-zinc-400">No steps provided.</div>
+        ) : (
+          <ol className="space-y-2">
+            {plan.steps.map((s, idx) => (
+              <li key={idx} className="rounded-xl border border-matrix-500/15 bg-black/25 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-sm font-medium text-zinc-100">
+                    {idx + 1}. {s.title || 'Step'}
+                  </div>
+                  {s.risk ? <RiskTag risk={s.risk} /> : null}
+                </div>
+                {s.details ? (
+                  <div className="mt-2 whitespace-pre-wrap break-words text-[11px] text-zinc-200">{s.details}</div>
+                ) : null}
+              </li>
+            ))}
+          </ol>
+        )}
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-2">
+        <div className="rounded-xl border border-matrix-500/15 bg-black/20 p-3">
+          <div className="mb-2 text-xs font-medium text-matrix-200/90">Files</div>
+          {!plan.files?.length ? (
+            <div className="text-[11px] text-zinc-400">None listed.</div>
+          ) : (
+            <ul className="space-y-1 text-[11px] text-zinc-200">
+              {plan.files.map((f) => (
+                <li key={f} className="break-all">
+                  {f}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <div className="rounded-xl border border-matrix-500/15 bg-black/20 p-3">
+          <div className="mb-2 text-xs font-medium text-matrix-200/90">Commands</div>
+          {!plan.commands?.length ? (
+            <div className="text-[11px] text-zinc-400">None listed.</div>
+          ) : (
+            <ul className="space-y-1 text-[11px] text-zinc-200">
+              {plan.commands.map((c) => (
+                <li key={c} className="break-all font-mono">
+                  {c}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+
+      <details className="rounded-xl border border-matrix-500/10 bg-black/20 p-3">
+        <summary className="cursor-pointer select-none text-xs text-zinc-200">Raw plan JSON</summary>
+        <pre className="mt-2 max-h-[360px] overflow-auto whitespace-pre-wrap break-words text-[11px] text-zinc-200">
+          {JSON.stringify(plan, null, 2)}
+        </pre>
+      </details>
+    </div>
+  );
 }
 
 export function RunDetails({ runId }: { runId: string }) {
@@ -128,8 +244,9 @@ export function RunDetails({ runId }: { runId: string }) {
       setErr(null);
       setApproving(true);
       try {
-        const data = await j<{ ok: boolean; execute_run_id: string }>(await fetch(api.approvePlan, { method: 'POST' }));
-        // jump straight to the execution run
+        const data = await j<{ ok: boolean; execute_run_id: string }>(
+          await fetch(api.approvePlan, { method: 'POST' })
+        );
         window.location.href = `/runs/${encodeURIComponent(data.execute_run_id)}`;
       } catch (e: any) {
         setErr(String(e?.message ?? e));
@@ -366,9 +483,15 @@ export function RunDetails({ runId }: { runId: string }) {
                 <div className="min-w-0 break-words text-xs font-medium text-zinc-100">{openArtifact.name}</div>
                 <div className="text-[11px] text-zinc-400">{openArtifact.kind}</div>
               </div>
-              <pre className="max-h-[360px] overflow-auto whitespace-pre-wrap break-words text-[11px] text-zinc-200">
-                {openArtifact.content_text}
-              </pre>
+
+              {openArtifact.kind === 'plan' ? (
+                <PlanViewer planText={openArtifact.content_text} />
+              ) : (
+                <pre className="max-h-[360px] overflow-auto whitespace-pre-wrap break-words text-[11px] text-zinc-200">
+                  {openArtifact.content_text}
+                </pre>
+              )}
+
               <div className="mt-2 min-w-0 break-all text-[10px] text-zinc-500">artifact: {openArtifact.id}</div>
             </div>
           ) : null}
