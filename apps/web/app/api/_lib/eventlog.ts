@@ -3,6 +3,24 @@ import { events as eventsTable } from '@ocdash/db/schema';
 import { newId } from '@ocdash/shared';
 import type { EventSource, EventSeverity, EventType, OcdashEvent } from '@ocdash/shared';
 
+export function asEventRow(row: typeof eventsTable.$inferSelect): OcdashEvent {
+  return {
+    id: row.id,
+    ts: row.ts instanceof Date ? row.ts.toISOString() : new Date(row.ts as any).toISOString(),
+    seq: Number(row.seq ?? 0),
+    type: row.type as EventType,
+    source: row.source as EventSource,
+    severity: row.severity as EventSeverity,
+    project_id: row.projectId ?? undefined,
+    task_id: row.taskId ?? undefined,
+    run_id: row.runId ?? undefined,
+    step_id: row.stepId ?? undefined,
+    thread_id: row.threadId ?? undefined,
+    correlation_id: row.correlationId ?? undefined,
+    payload: (row.payload ?? {}) as any
+  };
+}
+
 export async function appendProjectEvent({
   databaseUrl,
   projectId,
