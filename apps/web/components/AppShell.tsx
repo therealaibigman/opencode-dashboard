@@ -14,9 +14,16 @@ export function AppShell({ title, children }: { title?: string; children: React.
   const { projects, selectedProjectId, setSelectedProjectId, refreshProjects } = useProject();
 
   const [creating, setCreating] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  const api = useMemo(() => ({ projects: `${BASE}/api/projects` }), [BASE]);
+  const api = useMemo(
+    () => ({
+      projects: `${BASE}/api/projects`,
+      project: (id: string) => `${BASE}/api/projects/${encodeURIComponent(id)}`
+    }),
+    [BASE]
+  );
 
   async function ensureDemoProject() {
     setErr(null);
@@ -37,6 +44,36 @@ export function AppShell({ title, children }: { title?: string; children: React.
     }
   }
 
+  async function deleteSelectedProject() {
+    if (!selectedProjectId) return;
+
+    const p = projects.find((x) => x.id === selectedProjectId);
+    const label = p ? `${p.name} (${p.id})` : selectedProjectId;
+
+    const ok = window.confirm(
+      `Delete project ${label}?\n\nThis will permanently delete tasks, runs, artifacts, and events for this project.`
+    );
+    if (!ok) return;
+
+    setErr(null);
+    setDeleting(true);
+    try {
+      const res = await fetch(api.project(selectedProjectId), { method: 'DELETE' });
+      await j(res);
+
+      await refreshProjects();
+
+      // pick a sane next selection
+      const remaining = projects.filter((x) => x.id !== selectedProjectId);
+      const nextId = remaining[0]?.id ?? 'prj_demo';
+      setSelectedProjectId(nextId);
+    } catch (e: any) {
+      setErr(String(e?.message ?? e));
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   return (
     <div className="flex min-h-screen w-full">
       <aside className="hidden w-80 shrink-0 border-r border-matrix-500/15 bg-black/25 p-4 md:block">
@@ -52,8 +89,7 @@ export function AppShell({ title, children }: { title?: string; children: React.
           onChange={(e) => setSelectedProjectId(e.target.value)}
         >
           {projects.map((p) => (
-            <option key={p.id} value={p.id}
-            >
+            <option key={p.id} value={p.id}>
               {p.name} ({p.id})
             </option>
           ))}
@@ -62,7 +98,7 @@ export function AppShell({ title, children }: { title?: string; children: React.
           )}
         </select>
 
-        <div className="mt-3 flex gap-2">
+        <div className="mt-3 grid gap-2">
           <button
             onClick={ensureDemoProject}
             disabled={creating}
@@ -70,6 +106,18 @@ export function AppShell({ title, children }: { title?: string; children: React.
           >
             Ensure Demo
           </button>
+
+          <button
+            onClick={deleteSelectedProject}
+            disabled={deleting || creating || !selectedProjectId}
+            className="w-full rounded-lg bg-red-500/10 px-3 py-2 text-sm text-red-100 ring-1 ring-red-500/30 hover:bg-red-500/15 disabled:opacity-60"
+          >
+            {deleting ? 'Deleting…' : 'Delete Project'}
+          </button>
+
+          <div className="text-[11px] text-zinc-500">
+            Deleting a project cascades to tasks/runs/artifacts. Events are purged too.
+          </div>
         </div>
 
         {err ? (
