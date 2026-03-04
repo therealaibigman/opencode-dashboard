@@ -27,6 +27,7 @@ const WORKSPACES_ROOT =
   process.env.PROJECT_WORKSPACES_ROOT ?? '/home/exedev/.openclaw/workspace/opencode-workspaces';
 
 const REQUIRE_APPROVAL = String(process.env.OC_DASH_REQUIRE_APPROVAL ?? '') === '1';
+const WORKER_ID = String(process.env.OC_DASH_WORKER_ID ?? '').trim() || `worker@${process.pid}`;
 
 function nowIso() {
   return new Date().toISOString();
@@ -189,11 +190,6 @@ async function processRun(db: any, runId: string) {
     }
   }
 
-  await db
-    .update(runs)
-    .set({ status: 'running', startedAt: new Date() })
-    .where(and(eq(runs.id, runId), eq(runs.status, 'queued')));
-
   let seq = await getNextSeq(db, runId);
 
   await appendEventRow(db, {
@@ -206,7 +202,7 @@ async function processRun(db: any, runId: string) {
     project_id: projectId,
     task_id: taskId ?? undefined,
     run_id: runId,
-    payload: { message: 'Run started', kind }
+    payload: { message: 'Run started', kind, worker_id: WORKER_ID }
   });
 
   const stepId = 'stp_opencode_run';
@@ -862,7 +858,7 @@ async function main() {
       try {
         const claimed = await db
           .update(runs)
-          .set({ status: 'running', startedAt: new Date() })
+          .set({ status: 'running', startedAt: new Date(), workerId: WORKER_ID })
           .where(and(eq(runs.id, runId), eq(runs.status, 'queued')))
           .returning({ id: runs.id });
         if (!claimed.length) continue;

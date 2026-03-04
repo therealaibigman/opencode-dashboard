@@ -86,6 +86,9 @@ export const runs = pgTable(
     status: runStatusEnum('status').notNull().default('queued'),
     modelProfile: text('model_profile').notNull().default('balanced'),
 
+    // Which worker claimed/executed the run (useful for debugging multi-worker setups)
+    workerId: text('worker_id'),
+
     // GitHub integration: persisted PR info (optional)
     prUrl: text('pr_url'),
     prBranch: text('pr_branch'),
