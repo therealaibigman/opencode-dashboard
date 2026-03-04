@@ -6,7 +6,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 import { makeDb } from '@ocdash/db/client';
-import { artifacts, events, messages, projects, runSteps, runs, tasks, threads } from '@ocdash/db/schema';
+import { artifacts, events, messages, pipelines, projects, runSteps, runs, tasks, threads } from '@ocdash/db/schema';
 
 import { newId } from '@ocdash/shared';
 import type { OcdashEvent } from '@ocdash/shared';
@@ -199,6 +199,40 @@ async function appendThreadMessage({
   return id;
 }
 
+async function createQuickStep({
+  db,
+  projectId,
+  runId,
+  name,
+  status = 'succeeded',
+  model,
+  output
+}: {
+  db: any;
+  projectId: string;
+  runId: string;
+  name: string;
+  status?: 'succeeded' | 'failed';
+  model?: string | null;
+  output?: any;
+}) {
+  const id = newId('stp');
+  const now = new Date();
+  await db.insert(runSteps).values({
+    id,
+    projectId,
+    runId,
+    name,
+    status,
+    model: model ?? null,
+    startedAt: now,
+    finishedAt: now,
+    inputJson: {},
+    outputJson: output ?? {}
+  });
+  return id;
+}
+
 async function isRunCancelled(db: any, runId: string): Promise<boolean> {
   const rows = await db.select({ status: runs.status }).from(runs).where(eq(runs.id, runId)).limit(1);
   return rows?.[0]?.status === 'cancelled';
@@ -276,6 +310,7 @@ async function processRun(db: any, runId: string) {
   const projectId = runRow?.projectId as string | undefined;
   const taskId = (runRow?.taskId as string | null | undefined) ?? null;
   const threadId = ((runRow as any)?.threadId as string | null | undefined) ?? null;
+  const pipelineId = ((runRow as any)?.pipelineId as string | null | undefined) ?? null;
   const kind = (runRow as any)?.kind ?? 'execute';
 
   if (!projectId) throw new Error(`Run ${runId} missing projectId`);
@@ -297,6 +332,61 @@ async function processRun(db: any, runId: string) {
   }
 
   let seq = await getNextSeq(db, runId);
+
+  // GSD pipeline pre-steps (v1): record intake/plan-context steps when a pipeline is selected.
+  if (pipelineId) {
+    try {
+      const prows = await db.select().from(pipelines).where(eq(pipelines.id, pipelineId)).limit(1);
+      const pname = prows[0]?.name ? String(prows[0].name) : pipelineId;
+      await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: `Pipeline: ${pname}` });
+    } catch {
+      // ignore
+    }
+
+    await createQuickStep({ db, projectId, runId, name: 'intake', output: { note: 'recorded' } });
+
+    const planRows = await db
+      .select({ id: artifacts.id })
+      .from(artifacts)
+      .where(and(eq(artifacts.runId, runId), eq(artifacts.kind, 'plan')))
+      .limit(1);
+
+    await createQuickStep({
+      db,
+      projectId,
+      runId,
+      name: 'plan',
+      output: { has_plan_artifact: Boolean(planRows.length) }
+    });
+
+    // Use an explicit run step id for the opencode execution step.
+    stepId = newId('stp');
+    await db.insert(runSteps).values({
+      id: stepId,
+      projectId,
+      runId,
+      name: kind === 'plan' ? 'plan' : 'execute',
+      status: 'running',
+      model: model ?? null,
+      startedAt: new Date(),
+      inputJson: { kind }
+    });
+
+    await appendEventRow(db, {
+      id: newId('evt'),
+      ts: nowIso(),
+      seq: seq++,
+      type: 'run.step.started',
+      source: 'worker',
+      severity: 'info',
+      project_id: projectId,
+      task_id: taskId ?? undefined,
+      thread_id: threadId ?? undefined,
+      run_id: runId,
+      step_id: stepId,
+      payload: { name: kind === 'plan' ? 'plan' : 'execute', model: model ?? null }
+    });
+  }
 
   await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: `Run started (${kind}).` });
 
@@ -323,7 +413,7 @@ async function processRun(db: any, runId: string) {
   });
 
 
-  const stepId = newId('stp');
+  let stepId = newId('stp');
 
   await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: `Run started (${kind}).` });
 
