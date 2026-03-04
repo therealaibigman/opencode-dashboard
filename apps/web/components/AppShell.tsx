@@ -36,13 +36,19 @@ export function AppShell({ title, children }: { title?: string; children: React.
   const [approval, setApproval] = useState<ApprovalRequested | null>(null);
   const [approvalErr, setApprovalErr] = useState<string | null>(null);
   const [approvalBusy, setApprovalBusy] = useState<'approve' | 'reject' | null>(null);
+
+  // de-dupe across reconnects
   const lastApprovalIdRef = useRef<string | null>(null);
+  const shownRunIdsRef = useRef<Set<string>>(new Set());
 
   const api = useMemo(
     () => ({
       projects: `${BASE}/api/projects`,
       project: (id: string) => `${BASE}/api/projects/${encodeURIComponent(id)}`,
-      projectEvents: (id: string) => `${BASE}/api/projects/${encodeURIComponent(id)}/events/stream`,
+      projectEvents: (id: string, afterTs?: string) => {
+        const base = `${BASE}/api/projects/${encodeURIComponent(id)}/events/stream`;
+        return afterTs ? `${base}?after_ts=${encodeURIComponent(afterTs)}` : base;
+      },
       approveRun: (runId: string) => `${BASE}/api/runs/${encodeURIComponent(runId)}/approve`,
       rejectRun: (runId: string) => `${BASE}/api/runs/${encodeURIComponent(runId)}/reject`
     }),
@@ -126,16 +132,44 @@ export function AppShell({ title, children }: { title?: string; children: React.
   useEffect(() => {
     if (!selectedProjectId) return;
 
-    const es = new EventSource(api.projectEvents(selectedProjectId));
+    const storageKey = `ocdash:lastApprovalTs:${selectedProjectId}`;
+    let afterTs = '';
+    try {
+      afterTs = sessionStorage.getItem(storageKey) ?? '';
+    } catch {
+      // ignore
+    }
+
+    // If we have no cursor, start slightly in the past so we catch events that just happened.
+    if (!afterTs) afterTs = new Date(Date.now() - 5000).toISOString();
+
+    const es = new EventSource(api.projectEvents(selectedProjectId, afterTs));
 
     const onApproval = (ev: MessageEvent) => {
       try {
         const data = JSON.parse(ev.data) as ApprovalRequested;
         if (!data?.id || data.type !== 'approval.requested') return;
 
-        // de-dupe
+        // advance cursor
+        try {
+          if (data.ts) sessionStorage.setItem(storageKey, data.ts);
+        } catch {
+          // ignore
+        }
+
+        // de-dupe by event id (within a connection)
         if (lastApprovalIdRef.current === data.id) return;
         lastApprovalIdRef.current = data.id;
+
+        const runId = data.run_id ?? '';
+        if (!runId) return;
+
+        // don't spam: if we already showed this run, ignore
+        if (shownRunIdsRef.current.has(runId)) return;
+        shownRunIdsRef.current.add(runId);
+
+        // if a modal is already open for this run, ignore
+        if (approval?.run_id && approval.run_id === runId) return;
 
         setApprovalErr(null);
         setApprovalBusy(null);
@@ -167,7 +201,10 @@ export function AppShell({ title, children }: { title?: string; children: React.
       await j(await fetch(api.approveRun(runId), { method: 'POST' }));
       setApproval(null);
     } catch (e: any) {
-      setApprovalErr(String(e?.message ?? e));
+      const msg = String(e?.message ?? e);
+      // If the run already moved on, close the modal instead of spamming.
+      if (msg.includes('needs_approval')) setApproval(null);
+      else setApprovalErr(msg);
     } finally {
       setApprovalBusy(null);
     }
@@ -188,7 +225,9 @@ export function AppShell({ title, children }: { title?: string; children: React.
       );
       setApproval(null);
     } catch (e: any) {
-      setApprovalErr(String(e?.message ?? e));
+      const msg = String(e?.message ?? e);
+      if (msg.includes('needs_approval')) setApproval(null);
+      else setApprovalErr(msg);
     } finally {
       setApprovalBusy(null);
     }
@@ -231,7 +270,7 @@ export function AppShell({ title, children }: { title?: string; children: React.
               value={newProjectId}
               onChange={(e) => setNewProjectId(e.target.value)}
               placeholder="Project id (optional, e.g. prj_acme)"
-              className="w-full rounded-lg border border-matrix-500/20 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:ring-1 focus:ring-matrix-500/40"
+              className="w-full rounded-lg border border-matrix-500/20 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:ring-1 ring-matrix-500/40"
             />
 
             <button
@@ -292,7 +331,7 @@ export function AppShell({ title, children }: { title?: string; children: React.
               </div>
             ) : null}
             {approval.payload?.patch_artifact_id ? (
-              <div className="mt-1 text-[11px] text-zinc-400 break-all">patch artifact: {approval.payload.patch_artifact_id}</div>
+              <div className="mt-1 break-all text-[11px] text-zinc-400">patch artifact: {approval.payload.patch_artifact_id}</div>
             ) : null}
 
             {approvalErr ? (
