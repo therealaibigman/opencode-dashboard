@@ -77,11 +77,13 @@ async function maybeUpdateTaskStatus({
   db,
   projectId,
   taskId,
+  runId,
   nextStatus
 }: {
   db: any;
   projectId: string;
   taskId: string | null;
+  runId?: string;
   nextStatus: 'inbox' | 'planned' | 'in_progress' | 'blocked' | 'review' | 'done';
 }) {
   if (!taskId) return;
@@ -111,7 +113,7 @@ async function maybeUpdateTaskStatus({
         severity: 'info',
         project_id: projectId,
         task_id: taskId,
-        payload: { task_id: taskId, status: nextStatus }
+        payload: { task_id: taskId, status: nextStatus, by: 'worker', reason: 'run.lifecycle', run_id: runId ?? null }
       });
     }
     return;
@@ -130,7 +132,7 @@ async function maybeUpdateTaskStatus({
     severity: 'info',
     project_id: projectId,
     task_id: taskId,
-    payload: { task_id: taskId, status: nextStatus }
+    payload: { task_id: taskId, status: nextStatus, by: 'worker', reason: 'run.lifecycle', run_id: runId ?? null }
   });
 }
 
@@ -316,6 +318,7 @@ async function processRun(db: any, runId: string) {
     db,
     projectId,
     taskId,
+    runId,
     nextStatus: kind === 'plan' ? 'planned' : 'in_progress'
   });
 
@@ -608,7 +611,7 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
       });
 
         if (kind === 'execute') {
-          await maybeUpdateTaskStatus({ db, projectId, taskId, nextStatus: 'review' });
+          await maybeUpdateTaskStatus({ db, projectId, taskId, runId, nextStatus: 'review' });
         }
 
         await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: 'Approval required. Approve or reject in the dashboard to continue.' });
@@ -629,7 +632,7 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
       payload: { message: 'Plan run failed: no json block produced' }
     });
 
-        await maybeUpdateTaskStatus({ db, projectId, taskId, nextStatus: 'blocked' });
+        await maybeUpdateTaskStatus({ db, projectId, taskId, runId, nextStatus: 'blocked' });
 
         await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: 'Run failed. Check timeline/artifacts for details.' });
     return;
@@ -654,7 +657,7 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
     });
 
         if (kind === 'execute') {
-          await maybeUpdateTaskStatus({ db, projectId, taskId, nextStatus: 'review' });
+          await maybeUpdateTaskStatus({ db, projectId, taskId, runId, nextStatus: 'review' });
         }
 
         await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: 'Approval required. Approve or reject in the dashboard to continue.' });
@@ -684,7 +687,7 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
         });
 
         if (kind === 'execute') {
-          await maybeUpdateTaskStatus({ db, projectId, taskId, nextStatus: 'review' });
+          await maybeUpdateTaskStatus({ db, projectId, taskId, runId, nextStatus: 'review' });
         }
 
         await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: 'Approval required. Approve or reject in the dashboard to continue.' });
@@ -731,7 +734,7 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
         });
 
         if (kind === 'execute') {
-          await maybeUpdateTaskStatus({ db, projectId, taskId, nextStatus: 'review' });
+          await maybeUpdateTaskStatus({ db, projectId, taskId, runId, nextStatus: 'review' });
         }
 
         await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: 'Approval required. Approve or reject in the dashboard to continue.' });
@@ -758,7 +761,7 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
           });
 
         if (kind === 'execute') {
-          await maybeUpdateTaskStatus({ db, projectId, taskId, nextStatus: 'review' });
+          await maybeUpdateTaskStatus({ db, projectId, taskId, runId, nextStatus: 'review' });
         }
 
         await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: 'Approval required. Approve or reject in the dashboard to continue.' });
@@ -1002,7 +1005,7 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
           const prUrl = pr?.[0]?.prUrl ? String(pr[0].prUrl) : '';
           const prState = pr?.[0]?.prState ? String(pr[0].prState) : '';
           const next = prUrl ? 'review' : prState === 'pushed' ? 'done' : 'review';
-          await maybeUpdateTaskStatus({ db, projectId, taskId, nextStatus: next });
+          await maybeUpdateTaskStatus({ db, projectId, taskId, runId, nextStatus: next });
         }
 
         await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: `Run completed. ${runRow?.prUrl ? 'PR: ' + runRow.prUrl : ''}`.trim() });
@@ -1037,7 +1040,7 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
           const prUrl = pr?.[0]?.prUrl ? String(pr[0].prUrl) : '';
           const prState = pr?.[0]?.prState ? String(pr[0].prState) : '';
           const next = prUrl ? 'review' : prState === 'pushed' ? 'done' : 'review';
-          await maybeUpdateTaskStatus({ db, projectId, taskId, nextStatus: next });
+          await maybeUpdateTaskStatus({ db, projectId, taskId, runId, nextStatus: next });
         }
 
         await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: `Run completed. ${runRow?.prUrl ? 'PR: ' + runRow.prUrl : ''}`.trim() });
@@ -1057,7 +1060,7 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
       payload: { message: 'Run failed (opencode)' }
     });
 
-        await maybeUpdateTaskStatus({ db, projectId, taskId, nextStatus: 'blocked' });
+        await maybeUpdateTaskStatus({ db, projectId, taskId, runId, nextStatus: 'blocked' });
 
         await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: 'Run failed. Check timeline/artifacts for details.' });
 
