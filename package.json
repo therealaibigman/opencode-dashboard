@@ -10,6 +10,7 @@
     "build": "npm -ws run build",
     "lint": "npm -ws run lint",
     "typecheck": "npm -ws run typecheck",
+    "check:migrations": "node scripts/check_migrations.js",
     "worker": "npm -w @ocdash/worker run dev",
     "db:generate": "npm -w @ocdash/db run generate",
     "db:migrate": "npm -w @ocdash/db run migrate"

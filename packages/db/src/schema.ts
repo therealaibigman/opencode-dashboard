@@ -92,6 +92,9 @@ export const runs = pgTable(
     // GitHub integration: persisted PR info (optional)
     prUrl: text('pr_url'),
     prBranch: text('pr_branch'),
+    prNumber: integer('pr_number'),
+    prRepo: text('pr_repo'),
+    prState: text('pr_state'),
 
     startedAt: timestamp('started_at', { withTimezone: true }),
     finishedAt: timestamp('finished_at', { withTimezone: true }),

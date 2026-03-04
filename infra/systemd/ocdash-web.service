@@ -1,0 +1,14 @@
+[Unit]
+Description=OpenCode Dashboard Web
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/exedev/.openclaw/workspace/opencode-dashboard
+EnvironmentFile=/home/exedev/.openclaw/workspace/opencode-dashboard/.env
+ExecStart=/usr/bin/npm -w @ocdash/web run start
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

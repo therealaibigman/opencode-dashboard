@@ -1,63 +1,41 @@
 # OpenCode Dashboard
 
-Control plane (Next.js + Postgres + worker) that wraps an OpenCode runtime and provides:
-- Projects + tasks
-- Runs + live event timeline (SSE with polling fallback)
-- Artifacts (stdout/stderr/patches)
-- Approval gate (manual + auto paths) with basic policy controls
+Next.js + Postgres + worker control plane for running `opencode run` locally.
 
-Deployed path assumption: if you serve under `/ocdash`, ensure your reverse proxy and env match.
+## Dev
 
-## Prereqs
-- Node 22+
-- npm
-- Docker (for Postgres)
-- `opencode` installed on the same host as the worker (for real runs)
+- `npm install`
+- `npm run db:migrate`
+- `npm run dev`
 
-## Setup
-```bash
-cd opencode-dashboard
-cp .env.example .env
+## CI / Migrations Guard
 
-# Postgres
-docker compose -f infra/docker/docker-compose.yml up -d
+This repo includes a destructive-migration guard:
 
-npm install
+- `npm run check:migrations`
 
-# create tables (first time)
-npm run db:generate
-npm run db:migrate
-```
+CI will fail if a migration contains destructive statements like `DROP CONSTRAINT`, `DROP COLUMN`, etc.
 
-## Run (dev)
-```bash
-npm -w @ocdash/web run dev
-npm -w @ocdash/worker run dev
-```
+If a destructive migration is intentional, add this comment to the SQL file:
 
-## Env notes
-- `DATABASE_URL` (required)
-- `OPENCODE_STUB=1` to run without provider keys (smoke testing)
-- `OPENCODE_MODEL=openrouter/...` to pin the model
-- `OC_DASH_REQUIRE_APPROVAL=1` forces `needs_approval` for any patch (testing approvals)
-
-## Test (quick)
-Create a project + task in the UI, then queue a run.
-
-## Test SSE (manual)
-1) Insert a demo run row:
 ```sql
-insert into projects (id, name) values ('prj_demo','Demo');
-insert into runs (id, project_id, status) values ('run_demo','prj_demo','queued');
+-- ocdash:allow-destructive
 ```
-2) Open:
-- http://localhost:3000/demo
 
-Worker will pick up `queued` runs and emit events. Web streams them at:
-- `GET /api/runs/run_demo/events/stream`
+## Deployment (systemd + nginx)
 
-## Deploy notes (nginx)
-For SSE routes, ensure proxy buffering is disabled and timeouts are long.
-Typical settings:
-- `proxy_buffering off;`
-- `proxy_read_timeout 3600s;`
+Example unit files:
+
+- `infra/systemd/ocdash-web.service`
+- `infra/systemd/ocdash-worker.service`
+
+Example nginx config:
+
+- `infra/nginx/ocdash.conf`
+
+Checklist:
+
+- Web basePath is `/ocdash`
+- Ensure `opencode` is installed + authenticated on the host
+- Ensure `gh auth login` is done if you want auto PR creation
+- Check `/ocdash/api/health`

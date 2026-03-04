@@ -750,7 +750,7 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
       const prRes = await createGithubPr({ ws, runId, baseBranch, title: prTitle, body: prBody });
 
       if (prRes.ok) {
-        await db.update(runs).set({ prUrl: prRes.url, prBranch: prRes.branch }).where(eq(runs.id, runId));
+        await db.update(runs).set({ prUrl: prRes.url, prBranch: prRes.branch, prNumber: prRes.number ?? null, prRepo: prRes.repo ?? null, prState: prRes.state ?? null }).where(eq(runs.id, runId));
         const prArtId = await writeArtifact({ db, projectId, runId, stepId, kind: 'github_pr', name: 'GitHub PR', content: prRes.url + '\n' });
         await appendEventRow(db, {
           id: newId('evt'),
@@ -763,7 +763,7 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
           task_id: taskId ?? undefined,
           run_id: runId,
           step_id: stepId,
-          payload: { tool: 'github.pr.create', url: prRes.url, artifact_id: prArtId }
+          payload: { tool: 'github.pr.create', url: prRes.url, branch: prRes.branch, number: prRes.number ?? null, repo: prRes.repo ?? null, state: prRes.state ?? null, artifact_id: prArtId }
         });
       } else {
         const prErrId = await writeArtifact({ db, projectId, runId, stepId, kind: 'stderr', name: 'github pr create failed', content: String(prRes.error) });

@@ -45,8 +45,37 @@ export type CreatePrArgs = {
 };
 
 export type CreatePrResult =
-  | { ok: true; url: string; branch: string }
+  | {
+      ok: true;
+      url: string;
+      branch: string;
+      number?: number;
+      repo?: string;
+      state?: string;
+    }
   | { ok: false; error: string };
+
+async function enrichPr({
+  ws,
+  url
+}: {
+  ws: string;
+  url: string;
+}): Promise<{ number?: number; repo?: string; state?: string }> {
+  const view = await runCmdShell({ cwd: ws, cmd: `gh pr view ${JSON.stringify(url)} --json number,state,repository,url` });
+  if (view.exitCode !== 0) return {};
+
+  try {
+    const j = JSON.parse(view.stdout || '{}');
+    return {
+      number: typeof j.number === 'number' ? j.number : undefined,
+      state: typeof j.state === 'string' ? j.state : undefined,
+      repo: typeof j.repository?.nameWithOwner === 'string' ? j.repository.nameWithOwner : undefined
+    };
+  } catch {
+    return {};
+  }
+}
 
 export async function createGithubPr({
   ws,
@@ -60,14 +89,16 @@ export async function createGithubPr({
   // If PR already exists for this head branch, reuse it.
   const existing = await runCmdShell({
     cwd: ws,
-    cmd: `gh pr list --head ${branch} --state open --json url --limit 1`
+    cmd: `gh pr list --head ${branch} --state open --json url,number --limit 1`
   });
 
   if (existing.exitCode === 0) {
     try {
       const arr = JSON.parse(existing.stdout || '[]');
       if (Array.isArray(arr) && arr[0]?.url) {
-        return { ok: true, url: String(arr[0].url), branch };
+        const url = String(arr[0].url);
+        const extra = await enrichPr({ ws, url });
+        return { ok: true, url, branch, number: typeof arr[0].number === 'number' ? arr[0].number : extra.number, ...extra };
       }
     } catch {
       // ignore
@@ -88,12 +119,14 @@ export async function createGithubPr({
 
   if (pr.exitCode !== 0) {
     // Maybe it actually exists now; try to discover.
-    const again = await runCmdShell({ cwd: ws, cmd: `gh pr list --head ${branch} --state open --json url --limit 1` });
+    const again = await runCmdShell({ cwd: ws, cmd: `gh pr list --head ${branch} --state open --json url,number --limit 1` });
     if (again.exitCode === 0) {
       try {
         const arr = JSON.parse(again.stdout || '[]');
         if (Array.isArray(arr) && arr[0]?.url) {
-          return { ok: true, url: String(arr[0].url), branch };
+          const url = String(arr[0].url);
+          const extra = await enrichPr({ ws, url });
+          return { ok: true, url, branch, number: typeof arr[0].number === 'number' ? arr[0].number : extra.number, ...extra };
         }
       } catch {
         // ignore
@@ -106,5 +139,6 @@ export async function createGithubPr({
   const url = (pr.stdout.trim().split(/\s+/).find((x) => x.startsWith('http')) ?? '').trim();
   if (!url) return { ok: false, error: `PR created but URL not detected: ${pr.stdout.trim()}` };
 
-  return { ok: true, url, branch };
+  const extra = await enrichPr({ ws, url });
+  return { ok: true, url, branch, ...extra };
 }

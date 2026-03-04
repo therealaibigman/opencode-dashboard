@@ -258,7 +258,7 @@ export async function POST(_req: Request, { params }: { params: Promise<{ runId:
     const prRes = await createGithubPr({ ws, runId: rid, baseBranch, title: prTitle, body: prBody });
 
     if (prRes.ok) {
-      await db.update(runs).set({ prUrl: prRes.url, prBranch: prRes.branch }).where(eq(runs.id, rid));
+      await db.update(runs).set({ prUrl: prRes.url, prBranch: prRes.branch, prNumber: prRes.number ?? null, prRepo: prRes.repo ?? null, prState: prRes.state ?? null }).where(eq(runs.id, rid));
       const prArtId = await writeArtifact({
         db,
         projectId: r.projectId,
@@ -275,7 +275,7 @@ export async function POST(_req: Request, { params }: { params: Promise<{ runId:
         taskId: r.taskId ?? null,
         runId: rid,
         type: 'tool.call.completed',
-        payload: { tool: 'github.pr.create', url: prRes.url, artifact_id: prArtId }
+        payload: { tool: 'github.pr.create', url: prRes.url, branch: prRes.branch, number: prRes.number ?? null, repo: prRes.repo ?? null, state: prRes.state ?? null, artifact_id: prArtId }
       });
     } else {
       const prErrId = await writeArtifact({

@@ -1,0 +1,16 @@
+[Unit]
+Description=OpenCode Dashboard Worker
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/exedev/.openclaw/workspace/opencode-dashboard
+EnvironmentFile=/home/exedev/.openclaw/workspace/opencode-dashboard/.env
+# Optional: override worker identity
+Environment=OC_DASH_WORKER_ID=worker-1
+ExecStart=/usr/bin/npm -w @ocdash/worker run dev
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
