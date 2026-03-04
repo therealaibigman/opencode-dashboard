@@ -23,7 +23,9 @@ export function ChatPanel() {
   const api = useMemo(
     () => ({
       tasks: `${BASE}/api/tasks`,
-      runs: `${BASE}/api/runs`
+      runs: `${BASE}/api/runs`,
+      threads: `${BASE}/api/threads`,
+      messages: (threadId: string) => `${BASE}/api/threads/${encodeURIComponent(threadId)}/messages`
     }),
     [BASE]
   );
@@ -44,11 +46,37 @@ export function ChatPanel() {
     return data.task.id;
   }
 
-  async function queueRun({ taskId, kind }: { taskId?: string; kind: 'execute' | 'plan' }) {
+  async function createThread({ taskId }: { taskId?: string | null }) {
+    const res = await fetch(api.threads, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ project_id: projectId, task_id: taskId ?? null, title: taskId ? 'Task thread' : 'Project thread' })
+    });
+    const data = await j<{ thread: { id: string } }>(res);
+    return data.thread.id;
+  }
+
+  async function appendUserMessage({ threadId, content }: { threadId: string; content: string }) {
+    await j(
+      await fetch(api.messages(threadId), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ role: 'user', content_md: content })
+      })
+    );
+  }
+
+  async function queueRun({ taskId, kind, threadId }: { taskId?: string; kind: 'execute' | 'plan'; threadId?: string }) {
     const res = await fetch(api.runs, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ project_id: projectId, task_id: taskId ?? null, model_profile: 'balanced', kind })
+      body: JSON.stringify({
+        project_id: projectId,
+        task_id: taskId ?? null,
+        thread_id: threadId ?? null,
+        model_profile: 'balanced',
+        kind
+      })
     });
     const data = await j<{ run: { id: string } }>(res);
     setLog((p) => [`Queued ${kind} run ${data.run.id} (task: ${taskId ?? 'none'})`, ...p]);
@@ -88,9 +116,12 @@ export function ChatPanel() {
           <div className="flex flex-wrap gap-2">
             <button
               onClick={async () => {
-                await createTask();
+                const taskId = await createTask();
+                const threadId = await createThread({ taskId });
+                await appendUserMessage({ threadId, content: `${title || 'Untitled task'}\n\n${body}`.trim() });
                 setTitle('');
                 setBody('');
+                setLog((p) => [`Created thread ${threadId} for task ${taskId}`, ...p]);
               }}
               className="rounded-lg bg-matrix-500/15 px-3 py-2 text-sm text-matrix-100 ring-1 ring-matrix-500/40 hover:bg-matrix-500/20"
             >
@@ -100,9 +131,11 @@ export function ChatPanel() {
             <button
               onClick={async () => {
                 const taskId = await createTask();
+                const threadId = await createThread({ taskId });
+                await appendUserMessage({ threadId, content: `${title || 'Untitled task'}\n\n${body}`.trim() });
                 setTitle('');
                 setBody('');
-                await queueRun({ taskId, kind: 'plan' });
+                await queueRun({ taskId, kind: 'plan', threadId });
               }}
               className="rounded-lg bg-blue-500/20 px-3 py-2 text-sm font-medium text-blue-50 ring-1 ring-blue-500/40 hover:bg-blue-500/25"
             >
@@ -112,9 +145,11 @@ export function ChatPanel() {
             <button
               onClick={async () => {
                 const taskId = await createTask();
+                const threadId = await createThread({ taskId });
+                await appendUserMessage({ threadId, content: `${title || 'Untitled task'}\n\n${body}`.trim() });
                 setTitle('');
                 setBody('');
-                await queueRun({ taskId, kind: 'execute' });
+                await queueRun({ taskId, kind: 'execute', threadId });
               }}
               className="rounded-lg bg-matrix-500/25 px-3 py-2 text-sm font-medium text-matrix-50 ring-1 ring-matrix-500/50 hover:bg-matrix-500/30"
             >
@@ -122,22 +157,36 @@ export function ChatPanel() {
             </button>
 
             <button
-              onClick={async () => queueRun({ kind: 'plan' })}
+              onClick={async () => {
+                const threadId = await createThread({ taskId: null });
+                await appendUserMessage({ threadId, content: `${title || 'Idea'}\n\n${body}`.trim() });
+                setTitle('');
+                setBody('');
+                await queueRun({ kind: 'plan', threadId });
+              }}
               className="rounded-lg bg-black/25 px-3 py-2 text-sm text-zinc-200 ring-1 ring-matrix-500/20 hover:bg-black/35"
             >
               Plan (no task)
             </button>
           </div>
 
-          <div className="rounded-xl border border-matrix-500/20 bg-black/25 p-3">
-            <div className="mb-2 text-xs font-medium text-matrix-200/90">Local actions log</div>
-            <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words text-xs text-zinc-200">
-              {log.join('\n')}
-            </pre>
+          <div className="rounded-xl border border-matrix-500/20 bg-black/20 p-3">
+            <div className="mb-2 text-xs font-medium text-matrix-200/90">Log</div>
+            {log.length === 0 ? <div className="text-[11px] text-zinc-400">No actions yet.</div> : null}
+            <div className="space-y-1">
+              {log.slice(0, 10).map((l, i) => (
+                <div key={i} className="text-[11px] text-zinc-300">
+                  {l}
+                </div>
+              ))}
+            </div>
           </div>
         </div>
 
-        <EventFeed className="min-h-[620px] md:min-h-[calc(100vh-240px)]" />
+        <div className="rounded-xl border border-matrix-500/20 bg-black/20 p-3">
+          <div className="mb-2 text-xs font-medium text-matrix-200/90">Live events</div>
+          <EventFeed />
+        </div>
       </div>
     </div>
   );

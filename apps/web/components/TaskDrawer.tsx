@@ -16,11 +16,30 @@ type Task = {
   archivedAt: string | null;
 };
 
+type ThreadRow = {
+  id: string;
+  projectId: string;
+  taskId: string | null;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type MessageRow = {
+  id: string;
+  projectId: string;
+  threadId: string;
+  role: string;
+  contentMd: string;
+  createdAt: string;
+};
+
 type RunRow = {
   id: string;
   projectId: string;
   taskId: string | null;
   parentRunId: string | null;
+  threadId: string | null;
   kind: 'execute' | 'plan';
   status: string;
   modelProfile: string;
@@ -36,6 +55,12 @@ async function j<T>(res: Response): Promise<T> {
   return (await res.json()) as T;
 }
 
+function fmtTs(iso: string) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString(undefined, { hour12: false });
+}
+
 export function TaskDrawer({ task, onClose }: { task: Task; onClose: () => void }) {
   const BASE = useBasePath();
   const router = useRouter();
@@ -49,13 +74,24 @@ export function TaskDrawer({ task, onClose }: { task: Task; onClose: () => void 
   const [saving, setSaving] = useState(false);
   const [runs, setRuns] = useState<RunRow[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+
+  const [threads, setThreads] = useState<ThreadRow[]>([]);
+  const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<MessageRow[]>([]);
+  const [newThreadTitle, setNewThreadTitle] = useState('');
+  const [newMsg, setNewMsg] = useState('');
+  const [sending, setSending] = useState(false);
+  const [creatingThread, setCreatingThread] = useState(false);
+
   const [err, setErr] = useState<string | null>(null);
   const [queueing, setQueueing] = useState<'plan' | 'execute' | null>(null);
 
   const api = useMemo(
     () => ({
       runs: `${BASE}/api/runs`,
-      task: `${BASE}/api/tasks/${encodeURIComponent(task.id)}`
+      task: `${BASE}/api/tasks/${encodeURIComponent(task.id)}`,
+      threads: `${BASE}/api/threads`,
+      messages: (threadId: string) => `${BASE}/api/threads/${encodeURIComponent(threadId)}/messages`
     }),
     [BASE, task.id]
   );
@@ -73,6 +109,95 @@ export function TaskDrawer({ task, onClose }: { task: Task; onClose: () => void 
       if (!selectedRunId && data.runs.length) setSelectedRunId(data.runs[0]!.id);
     } catch (e: any) {
       setErr(String(e?.message ?? e));
+    }
+  }
+
+  async function refreshThreads() {
+    setErr(null);
+    try {
+      const data = await j<{ threads: ThreadRow[] }>(
+        await fetch(
+          `${api.threads}?project_id=${encodeURIComponent(projectId)}&task_id=${encodeURIComponent(task.id)}`,
+          { cache: 'no-store' }
+        )
+      );
+      setThreads(data.threads);
+      if (!selectedThreadId && data.threads.length) setSelectedThreadId(data.threads[0]!.id);
+    } catch (e: any) {
+      setErr(String(e?.message ?? e));
+    }
+  }
+
+  async function refreshMessages(threadId: string) {
+    try {
+      const data = await j<{ messages: MessageRow[] }>(await fetch(api.messages(threadId), { cache: 'no-store' }));
+      setMessages(data.messages);
+    } catch (e: any) {
+      setErr(String(e?.message ?? e));
+    }
+  }
+
+  async function ensureDefaultThread() {
+    if (threads.length) return;
+    // create a default thread for this task
+    setCreatingThread(true);
+    try {
+      const res = await fetch(api.threads, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ project_id: projectId, task_id: task.id, title: 'Task thread' })
+      });
+      const data = await j<{ thread: { id: string } }>(res);
+      await refreshThreads();
+      setSelectedThreadId(data.thread.id);
+    } finally {
+      setCreatingThread(false);
+    }
+  }
+
+  async function createThread() {
+    const t = newThreadTitle.trim() || 'New thread';
+    setCreatingThread(true);
+    setErr(null);
+    try {
+      const res = await fetch(api.threads, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ project_id: projectId, task_id: task.id, title: t })
+      });
+      const data = await j<{ thread: { id: string } }>(res);
+      setNewThreadTitle('');
+      await refreshThreads();
+      setSelectedThreadId(data.thread.id);
+    } catch (e: any) {
+      setErr(String(e?.message ?? e));
+    } finally {
+      setCreatingThread(false);
+    }
+  }
+
+  async function sendMessage() {
+    const tid = selectedThreadId;
+    if (!tid) return;
+    const content = newMsg.trim();
+    if (!content) return;
+
+    setSending(true);
+    setErr(null);
+    try {
+      await j(
+        await fetch(api.messages(tid), {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ role: 'user', content_md: content })
+        })
+      );
+      setNewMsg('');
+      await refreshMessages(tid);
+    } catch (e: any) {
+      setErr(String(e?.message ?? e));
+    } finally {
+      setSending(false);
     }
   }
 
@@ -141,19 +266,24 @@ export function TaskDrawer({ task, onClose }: { task: Task; onClose: () => void 
     }
   }
 
-  const latestPlan = runs.find((r) => r.kind === 'plan') ?? null;
-  const latestExec = runs.find((r) => r.kind === 'execute') ?? null;
-
   async function queue(kind: 'plan' | 'execute', parentRunId?: string | null) {
     setErr(null);
     setQueueing(kind);
     try {
+      let tid = selectedThreadId;
+      if (!tid) {
+        await refreshThreads();
+        await ensureDefaultThread();
+        tid = selectedThreadId;
+      }
+
       const res = await fetch(api.runs, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           project_id: projectId,
           task_id: task.id,
+          thread_id: tid,
           model_profile: 'balanced',
           kind,
           parent_run_id: parentRunId ?? null
@@ -169,10 +299,26 @@ export function TaskDrawer({ task, onClose }: { task: Task; onClose: () => void 
     }
   }
 
+  const latestPlan = runs.find((r) => r.kind === 'plan') ?? null;
+  const latestExec = runs.find((r) => r.kind === 'execute') ?? null;
+
   useEffect(() => {
-    refreshRuns();
+    void refreshRuns();
+    void refreshThreads();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [task.id, projectId]);
+
+  useEffect(() => {
+    if (!selectedThreadId) return;
+    void refreshMessages(selectedThreadId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedThreadId]);
+
+  useEffect(() => {
+    if (!threads.length) return;
+    if (!selectedThreadId) setSelectedThreadId(threads[0]!.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [threads.length]);
 
   return (
     <div className="fixed inset-0 z-50">
@@ -271,17 +417,26 @@ export function TaskDrawer({ task, onClose }: { task: Task; onClose: () => void 
                 )}
 
                 <button
-                  onClick={refreshRuns}
+                  onClick={async () => {
+                    await refreshThreads();
+                    if (selectedThreadId) await refreshMessages(selectedThreadId);
+                    await refreshRuns();
+                  }}
                   className="rounded-lg bg-black/20 px-3 py-2 text-sm text-zinc-200 ring-1 ring-matrix-500/15 hover:bg-black/30"
                 >
-                  Refresh runs
+                  Refresh
                 </button>
               </div>
 
               {latestExec?.prUrl ? (
                 <div className="mt-2 text-xs text-zinc-200">
                   Latest PR:{' '}
-                  <a className="break-all text-matrix-200/90 hover:underline" href={latestExec.prUrl} target="_blank" rel="noreferrer">
+                  <a
+                    className="break-all text-matrix-200/90 hover:underline"
+                    href={latestExec.prUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
                     {latestExec.prUrl}
                   </a>
                 </div>
@@ -300,19 +455,121 @@ export function TaskDrawer({ task, onClose }: { task: Task; onClose: () => void 
             </button>
           </div>
 
-          <div className="grid flex-1 gap-3 p-4 md:grid-cols-5">
-            <div className="md:col-span-2">
+          <div className="grid flex-1 gap-3 overflow-hidden p-4 md:grid-cols-5">
+            <div className="md:col-span-2 space-y-3 overflow-hidden">
+              <div>
+                <div className="mb-2 flex items-center justify-between">
+                  <div className="text-xs font-medium text-matrix-200/90">Threads</div>
+                  <button
+                    onClick={() => refreshThreads()}
+                    className="rounded-md bg-black/25 px-2 py-1 text-[11px] text-zinc-200 ring-1 ring-matrix-500/15 hover:bg-black/35"
+                  >
+                    Refresh
+                  </button>
+                </div>
+
+                <div className="flex gap-2">
+                  <input
+                    value={newThreadTitle}
+                    onChange={(e) => setNewThreadTitle(e.target.value)}
+                    placeholder="New thread title"
+                    className="w-full rounded-lg border border-matrix-500/20 bg-black/25 px-2 py-2 text-xs text-zinc-100 outline-none"
+                  />
+                  <button
+                    onClick={() => createThread()}
+                    disabled={creatingThread}
+                    className="shrink-0 rounded-lg bg-matrix-500/15 px-3 py-2 text-xs text-matrix-100 ring-1 ring-matrix-500/30 hover:bg-matrix-500/20 disabled:opacity-60"
+                  >
+                    {creatingThread ? '…' : 'New'}
+                  </button>
+                </div>
+
+                <div className="mt-2 max-h-48 space-y-2 overflow-auto pr-1">
+                  {threads.length === 0 ? (
+                    <div className="rounded-lg border border-matrix-500/10 bg-black/20 p-2 text-[11px] text-zinc-400">
+                      No threads yet.
+                    </div>
+                  ) : null}
+
+                  {threads.map((t) => (
+                    <button
+                      key={t.id}
+                      onClick={() => setSelectedThreadId(t.id)}
+                      className={
+                        selectedThreadId === t.id
+                          ? 'w-full rounded-lg border border-matrix-500/30 bg-matrix-500/10 p-2 text-left text-xs text-zinc-100'
+                          : 'w-full rounded-lg border border-matrix-500/10 bg-black/20 p-2 text-left text-xs text-zinc-200 hover:bg-black/30'
+                      }
+                    >
+                      <div className="break-all font-medium">{t.title || t.id}</div>
+                      <div className="mt-1 break-all text-[10px] text-zinc-500">{t.id}</div>
+                      <div className="mt-1 text-[10px] text-zinc-500">updated: {fmtTs(t.updatedAt)}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-matrix-500/15 bg-black/15 p-3">
+                <div className="mb-2 flex items-center justify-between">
+                  <div className="text-xs font-medium text-matrix-200/90">Messages</div>
+                  {selectedThreadId ? (
+                    <div className="text-[10px] text-zinc-500 break-all">{selectedThreadId}</div>
+                  ) : null}
+                </div>
+
+                <div className="min-h-0 flex-1 space-y-2 overflow-auto pr-1">
+                  {selectedThreadId && messages.length === 0 ? (
+                    <div className="text-[11px] text-zinc-400">No messages yet.</div>
+                  ) : null}
+                  {!selectedThreadId ? <div className="text-[11px] text-zinc-400">Select a thread.</div> : null}
+
+                  {messages.map((m) => (
+                    <div key={m.id} className="rounded-lg border border-matrix-500/10 bg-black/20 p-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-[11px] text-zinc-300">{m.role}</div>
+                        <div className="text-[10px] text-zinc-500">{fmtTs(m.createdAt)}</div>
+                      </div>
+                      <div className="mt-1 whitespace-pre-wrap break-words text-xs text-zinc-100">{m.contentMd}</div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="mt-2 flex gap-2">
+                  <input
+                    value={newMsg}
+                    onChange={(e) => setNewMsg(e.target.value)}
+                    placeholder="Write a message…"
+                    className="w-full rounded-lg border border-matrix-500/20 bg-black/25 px-2 py-2 text-xs text-zinc-100 outline-none"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                        void sendMessage();
+                      }
+                    }}
+                  />
+                  <button
+                    onClick={() => sendMessage()}
+                    disabled={sending || !selectedThreadId}
+                    className="shrink-0 rounded-lg bg-matrix-500/15 px-3 py-2 text-xs text-matrix-100 ring-1 ring-matrix-500/30 hover:bg-matrix-500/20 disabled:opacity-60"
+                  >
+                    {sending ? '…' : 'Send'}
+                  </button>
+                </div>
+                <div className="mt-1 text-[10px] text-zinc-500">Ctrl/Cmd+Enter to send</div>
+              </div>
+            </div>
+
+            <div className="md:col-span-3 min-h-0 overflow-hidden">
               <div className="mb-2 flex items-center justify-between">
                 <div className="text-xs font-medium text-matrix-200/90">Runs</div>
                 <button
-                  onClick={refreshRuns}
+                  onClick={() => refreshRuns()}
                   className="rounded-md bg-black/25 px-2 py-1 text-[11px] text-zinc-200 ring-1 ring-matrix-500/15 hover:bg-black/35"
                 >
                   Refresh
                 </button>
               </div>
 
-              <div className="space-y-2">
+              <div className="space-y-2 overflow-auto pr-1">
                 {runs.length === 0 ? (
                   <div className="rounded-lg border border-matrix-500/10 bg-black/20 p-2 text-xs text-zinc-400">No runs yet.</div>
                 ) : null}
@@ -328,10 +585,13 @@ export function TaskDrawer({ task, onClose }: { task: Task; onClose: () => void 
                   >
                     <div className="flex items-center justify-between">
                       <div className="font-medium break-all">{r.id}</div>
-                      <div className="text-[11px] text-zinc-400">{r.kind} · {r.status}</div>
+                      <div className="text-[11px] text-zinc-400">
+                        {r.kind} · {r.status}
+                      </div>
                     </div>
                     <div className="mt-1 text-[11px] text-zinc-500">profile: {r.modelProfile}</div>
                     {r.parentRunId ? <div className="mt-1 break-all text-[10px] text-zinc-500">parent: {r.parentRunId}</div> : null}
+                    {r.threadId ? <div className="mt-1 break-all text-[10px] text-zinc-500">thread: {r.threadId}</div> : null}
                   </button>
                 ))}
 
@@ -344,14 +604,14 @@ export function TaskDrawer({ task, onClose }: { task: Task; onClose: () => void 
                   </button>
                 ) : null}
               </div>
-            </div>
 
-            <div className="md:col-span-3">
-              {selectedRunId ? (
-                <RunTimeline runId={selectedRunId} />
-              ) : (
-                <div className="rounded-xl border border-matrix-500/20 bg-black/25 p-3 text-sm text-zinc-300">Select a run.</div>
-              )}
+              <div className="mt-3">
+                {selectedRunId ? (
+                  <RunTimeline runId={selectedRunId} />
+                ) : (
+                  <div className="rounded-xl border border-matrix-500/20 bg-black/25 p-3 text-sm text-zinc-300">Select a run.</div>
+                )}
+              </div>
             </div>
           </div>
         </div>

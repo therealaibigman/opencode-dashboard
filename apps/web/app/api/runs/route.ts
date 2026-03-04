@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { and, desc, eq } from 'drizzle-orm';
 
 import { makeDb } from '@ocdash/db/client';
-import { artifacts, runs } from '@ocdash/db/schema';
+import { artifacts, runs, threads } from '@ocdash/db/schema';
 import { newId } from '@ocdash/shared';
 import { appendProjectEvent } from '../_lib/eventlog';
 
@@ -39,6 +39,7 @@ export async function POST(req: Request) {
     id?: string;
     project_id?: string;
     task_id?: string | null;
+    thread_id?: string | null;
     model_profile?: string;
     kind?: 'execute' | 'plan';
     parent_run_id?: string | null;
@@ -51,14 +52,38 @@ export async function POST(req: Request) {
   const taskId = body.task_id ?? null;
   const modelProfile = (body.model_profile ?? 'balanced').trim();
   const kind = body.kind ?? 'execute';
-  const parentRunId = (body.parent_run_id ?? null) ? String(body.parent_run_id).trim() : null;
+  const parentRunId = body.parent_run_id ? String(body.parent_run_id).trim() : null;
 
   const { db, pool } = makeDb(url);
   try {
+    let threadId = body.thread_id ? String(body.thread_id).trim() : '';
+
+    // If no thread provided, create a run-scoped thread.
+    if (!threadId) {
+      threadId = newId('thr');
+      await db.insert(threads).values({
+        id: threadId,
+        projectId,
+        taskId,
+        title: `Run ${id}`,
+        updatedAt: new Date()
+      });
+
+      await appendProjectEvent({
+        databaseUrl: url,
+        projectId,
+        taskId,
+        threadId,
+        type: 'thread.created',
+        payload: { thread: { id: threadId, project_id: projectId, task_id: taskId, title: `Run ${id}` } }
+      });
+    }
+
     await db.insert(runs).values({
       id,
       projectId,
       taskId,
+      threadId,
       modelProfile,
       kind,
       parentRunId,
@@ -90,6 +115,7 @@ export async function POST(req: Request) {
           databaseUrl: url,
           projectId,
           taskId,
+          threadId,
           runId: id,
           type: 'artifact.created',
           payload: { artifact: { id: copiedPlanId, kind: 'plan', name: 'approved plan' }, from_plan_run_id: parentRunId }
@@ -101,6 +127,7 @@ export async function POST(req: Request) {
       databaseUrl: url,
       projectId,
       taskId,
+      threadId,
       runId: id,
       type: 'run.created',
       payload: {
@@ -108,6 +135,7 @@ export async function POST(req: Request) {
           id,
           project_id: projectId,
           task_id: taskId,
+          thread_id: threadId,
           model_profile: modelProfile,
           kind,
           parent_run_id: parentRunId

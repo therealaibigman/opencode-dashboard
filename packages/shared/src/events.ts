@@ -10,6 +10,11 @@ export type EventType =
   | 'task.status.changed'
   | 'task.archived.changed'
 
+  // threads/messages
+  | 'thread.created'
+  | 'thread.updated'
+  | 'message.created'
+
   // runs
   | 'run.created'
   | 'run.started'

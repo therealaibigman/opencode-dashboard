@@ -78,6 +78,13 @@
       "when": 1772646679626,
       "tag": "0010_early_sleeper",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1772656423902,
+      "tag": "0011_melodic_earthquake",
+      "breakpoints": true
     }
   ]
 }

@@ -69,6 +69,45 @@ export const tasks = pgTable(
   })
 );
 
+export const threads = pgTable(
+  'threads',
+  {
+    id: text('id').primaryKey(),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    taskId: text('task_id').references(() => tasks.id, { onDelete: 'set null' }),
+    title: text('title').notNull().default(''),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => ({
+    projectIdx: index('threads_project_idx').on(t.projectId),
+    taskIdx: index('threads_task_idx').on(t.taskId),
+    updatedIdx: index('threads_updated_idx').on(t.projectId, t.updatedAt)
+  })
+);
+
+export const messages = pgTable(
+  'messages',
+  {
+    id: text('id').primaryKey(),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    threadId: text('thread_id')
+      .notNull()
+      .references(() => threads.id, { onDelete: 'cascade' }),
+    role: text('role').notNull(), // user | assistant | system
+    contentMd: text('content_md').notNull().default(''),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (m) => ({
+    threadIdx: index('messages_thread_idx').on(m.threadId, m.createdAt),
+    projectIdx: index('messages_project_idx').on(m.projectId, m.createdAt)
+  })
+);
+
 export const runs = pgTable(
   'runs',
   {
@@ -80,6 +119,9 @@ export const runs = pgTable(
 
     // For plan → execute linking.
     parentRunId: text('parent_run_id'),
+
+    // Link to a discussion thread.
+    threadId: text('thread_id').references(() => threads.id, { onDelete: 'set null' }),
 
     kind: runKindEnum('kind').notNull().default('execute'),
 
@@ -104,7 +146,8 @@ export const runs = pgTable(
     projectIdx: index('runs_project_idx').on(r.projectId),
     statusIdx: index('runs_status_idx').on(r.status),
     kindIdx: index('runs_kind_idx').on(r.kind),
-    parentIdx: index('runs_parent_idx').on(r.parentRunId)
+    parentIdx: index('runs_parent_idx').on(r.parentRunId),
+    threadIdx: index('runs_thread_idx').on(r.threadId)
   })
 );
 

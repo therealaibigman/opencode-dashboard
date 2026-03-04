@@ -28,6 +28,7 @@ export async function appendProjectEvent({
   source = 'api',
   severity = 'info',
   taskId,
+  threadId,
   runId,
   payload
 }: {
@@ -37,6 +38,7 @@ export async function appendProjectEvent({
   source?: EventSource;
   severity?: EventSeverity;
   taskId?: string | null;
+  threadId?: string | null;
   runId?: string | null;
   payload: unknown;
 }) {
@@ -51,6 +53,7 @@ export async function appendProjectEvent({
       severity,
       project_id: projectId,
       task_id: taskId ?? undefined,
+      thread_id: threadId ?? undefined,
       run_id: runId ?? undefined,
       payload
     };
@@ -60,6 +63,7 @@ export async function appendProjectEvent({
       ts: new Date(ev.ts),
       projectId: projectId,
       taskId: taskId ?? null,
+      threadId: threadId ?? null,
       runId: runId ?? null,
       seq: 0,
       type: ev.type,
