@@ -104,9 +104,11 @@ export function AppShell({ title, children }: { title?: string; children: React.
   return (
     <div className="flex min-h-screen w-full">
       <aside className="hidden w-80 shrink-0 border-r border-matrix-500/15 bg-black/25 p-4 md:block">
-        <div className="mb-4">
+        <div className="mb-4 min-w-0">
           <div className="text-xs text-matrix-200/80">OpenCode Dashboard</div>
-          <div className="text-lg font-semibold text-matrix-100">{title ?? 'Control Room'}</div>
+          <div className="min-w-0 break-words text-lg font-semibold text-matrix-100">
+            {title ?? 'Control Room'}
+          </div>
         </div>
 
         <div className="mb-2 text-xs text-zinc-300">Project</div>
