@@ -14,6 +14,7 @@ type Task = {
   title: string;
   bodyMd: string;
   status: TaskStatus;
+  archivedAt: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -44,6 +45,9 @@ export function KanbanPanel() {
   const { selectedProjectId: projectId } = useProject();
 
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [archived, setArchived] = useState<Task[]>([]);
+  const [showArchived, setShowArchived] = useState(false);
+
   const [err, setErr] = useState<string | null>(null);
   const [lastSync, setLastSync] = useState<number | null>(null);
   const [openTask, setOpenTask] = useState<Task | null>(null);
@@ -68,9 +72,16 @@ export function KanbanPanel() {
     setErr(null);
     try {
       const data = await j<{ tasks: Task[] }>(
-        await fetch(`${api.tasks}?project_id=${encodeURIComponent(projectId)}`, { cache: 'no-store' })
+        await fetch(`${api.tasks}?project_id=${encodeURIComponent(projectId)}&include_archived=1`, {
+          cache: 'no-store'
+        })
       );
-      setTasks(data.tasks);
+
+      const active = (data.tasks ?? []).filter((t) => !t.archivedAt);
+      const arc = (data.tasks ?? []).filter((t) => Boolean(t.archivedAt));
+
+      setTasks(active);
+      setArchived(arc);
       setLastSync(Date.now());
     } catch (e: any) {
       setErr(String(e?.message ?? e));
@@ -103,6 +114,7 @@ export function KanbanPanel() {
       'task.created',
       'task.updated',
       'task.status.changed',
+      'task.archived.changed',
       'run.created',
       'run.started',
       'run.completed',
@@ -145,6 +157,15 @@ export function KanbanPanel() {
     }
   }
 
+  async function restoreTask(t: Task) {
+    await fetch(api.patchTask(t.id), {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ archived: false, status: 'inbox' })
+    });
+    refreshDebounced();
+  }
+
   const by = COLS.reduce((acc, c) => {
     acc[c.key] = [];
     return acc;
@@ -162,13 +183,23 @@ export function KanbanPanel() {
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             onClick={() => refresh()}
             className="rounded-lg bg-black/25 px-3 py-2 text-sm text-zinc-200 ring-1 ring-matrix-500/20 hover:bg-black/35"
           >
             Refresh
           </button>
+
+          <label className="flex items-center gap-2 rounded-lg bg-black/15 px-3 py-2 text-sm text-zinc-200 ring-1 ring-matrix-500/15">
+            <input
+              type="checkbox"
+              checked={showArchived}
+              onChange={(e) => setShowArchived(e.target.checked)}
+            />
+            Show archived ({archived.length})
+          </label>
+
           <div className="text-xs text-zinc-500">
             {lastSync ? `Synced ${Math.floor((Date.now() - lastSync) / 1000)}s ago` : 'Not synced yet'}
           </div>
@@ -243,9 +274,39 @@ export function KanbanPanel() {
         ))}
       </div>
 
+      {showArchived ? (
+        <div className="rounded-2xl border border-matrix-500/20 bg-black/20 p-3">
+          <div className="mb-2 text-xs font-medium text-matrix-200/90">Archived</div>
+          {archived.length === 0 ? <div className="text-[11px] text-zinc-400">No archived tasks.</div> : null}
+          <div className="space-y-2">
+            {archived.map((t) => (
+              <div key={t.id} className="flex min-w-0 items-start justify-between gap-3 rounded-xl border border-matrix-500/10 bg-black/20 p-3">
+                <button className="min-w-0 text-left" onClick={() => setOpenTask(t)}>
+                  <div className="min-w-0 break-words text-sm font-medium text-zinc-100">{t.title}</div>
+                  <div className="mt-1 break-all text-[10px] text-zinc-500">{t.id}</div>
+                </button>
+
+                <button
+                  onClick={() => restoreTask(t)}
+                  className="shrink-0 rounded-lg bg-matrix-500/15 px-3 py-2 text-sm text-matrix-100 ring-1 ring-matrix-500/30 hover:bg-matrix-500/20"
+                >
+                  Restore to inbox
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
       {openTask ? (
         <TaskDrawer
-          task={{ id: openTask.id, title: openTask.title, bodyMd: openTask.bodyMd, status: openTask.status }}
+          task={{
+            id: openTask.id,
+            title: openTask.title,
+            bodyMd: openTask.bodyMd,
+            status: openTask.status,
+            archivedAt: openTask.archivedAt
+          }}
           onClose={() => setOpenTask(null)}
         />
       ) : null}

@@ -18,6 +18,8 @@ export async function PATCH(
     status?: 'inbox' | 'planned' | 'in_progress' | 'blocked' | 'review' | 'done';
     title?: string;
     body_md?: string;
+    archived?: boolean;
+    archived_at?: string | null;
   };
 
   const { db, pool } = makeDb(url);
@@ -30,11 +32,27 @@ export async function PATCH(
     if (typeof body.title === 'string') patch.title = body.title;
     if (typeof body.body_md === 'string') patch.bodyMd = body.body_md;
 
+    if (typeof body.archived === 'boolean') {
+      patch.archivedAt = body.archived ? new Date() : null;
+    }
+
+    if ('archived_at' in body) {
+      patch.archivedAt = body.archived_at ? new Date(String(body.archived_at)) : null;
+    }
+
     await db.update(tasks).set(patch).where(eq(tasks.id, taskId));
 
     const projectId = before[0]!.projectId;
 
-    if (body.status) {
+    if (typeof body.archived === 'boolean' || 'archived_at' in body) {
+      await appendProjectEvent({
+        databaseUrl: url,
+        projectId,
+        taskId,
+        type: 'task.archived.changed',
+        payload: { task_id: taskId, archived: Boolean((patch as any).archivedAt) }
+      });
+    } else if (body.status) {
       await appendProjectEvent({
         databaseUrl: url,
         projectId,

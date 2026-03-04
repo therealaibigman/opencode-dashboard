@@ -53,12 +53,17 @@ export const tasks = pgTable(
     title: text('title').notNull(),
     bodyMd: text('body_md').notNull().default(''),
     status: taskStatusEnum('status').notNull().default('inbox'),
+
+    // Archive is orthogonal to status.
+    archivedAt: timestamp('archived_at', { withTimezone: true }),
+
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
   },
   (t) => ({
     projectIdx: index('tasks_project_idx').on(t.projectId),
-    statusIdx: index('tasks_status_idx').on(t.status)
+    statusIdx: index('tasks_status_idx').on(t.status),
+    archivedIdx: index('tasks_archived_idx').on(t.archivedAt)
   })
 );
 
@@ -91,7 +96,7 @@ export const artifacts = pgTable(
       .references(() => projects.id, { onDelete: 'cascade' }),
     runId: text('run_id').references(() => runs.id, { onDelete: 'cascade' }),
     stepId: text('step_id'),
-    kind: text('kind').notNull(), // e.g. stdout, stderr, diff, patch
+    kind: text('kind').notNull(),
     name: text('name').notNull(),
     contentText: text('content_text').notNull().default(''),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
@@ -114,7 +119,6 @@ export const events = pgTable(
     runId: text('run_id'),
     stepId: text('step_id'),
 
-    // monotonic per run (or 0 for non-run events)
     seq: integer('seq').notNull().default(0),
 
     type: text('type').notNull(),

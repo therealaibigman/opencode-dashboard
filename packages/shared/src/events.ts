@@ -1,17 +1,18 @@
-export type EventSeverity = 'debug' | 'info' | 'warn' | 'error';
-
-export type EventSource = 'ui' | 'api' | 'worker' | 'opencode' | 'tool';
-
 export type EventType =
-  | 'chat.message.created'
-  | 'chat.action.requested'
+  // project
+  | 'project.created'
+  | 'project.updated'
+  | 'project.deleted'
+
+  // tasks
   | 'task.created'
   | 'task.updated'
   | 'task.status.changed'
+  | 'task.archived.changed'
+
+  // runs
   | 'run.created'
   | 'run.started'
-  | 'run.status.changed'
-  | 'run.needs_approval'
   | 'run.completed'
   | 'run.failed'
   | 'run.cancelled'
@@ -19,19 +20,31 @@ export type EventType =
   | 'run.step.progress'
   | 'run.step.completed'
   | 'run.step.failed'
+
+  // tools
   | 'tool.call.requested'
   | 'tool.call.completed'
   | 'tool.call.failed'
-  | 'llm.requested'
-  | 'llm.responded'
+
+  // approvals
   | 'approval.requested'
   | 'approval.resolved'
+
+  // artifacts
   | 'artifact.created';
 
-export type OcdashEvent<TPayload = unknown> = {
+export type EventSeverity = 'debug' | 'info' | 'warn' | 'error';
+
+// Event "source" is not currently a strict enum; keep it open.
+export type EventSource = string;
+
+export type OcdashEvent = {
   id: string;
-  ts: string; // ISO
-  seq: number; // monotonic per-run
+  ts: string;
+
+  // monotonic per run
+  seq: number;
+
   type: EventType;
   source: EventSource;
   severity: EventSeverity;
@@ -41,12 +54,12 @@ export type OcdashEvent<TPayload = unknown> = {
   thread_id?: string;
   run_id?: string;
   step_id?: string;
-
   correlation_id?: string;
-  payload: TPayload;
+
+  payload?: any;
 };
 
-export function toSse({ event }: { event: OcdashEvent }): string {
-  // SSE: id is the sequence number for resume
-  return `id: ${event.seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
+export function toSse(e: OcdashEvent) {
+  const data = JSON.stringify(e);
+  return `id: ${e.seq}\nevent: ${e.type}\ndata: ${data}\n\n`;
 }

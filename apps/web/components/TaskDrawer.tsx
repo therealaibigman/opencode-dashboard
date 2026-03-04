@@ -12,6 +12,7 @@ type Task = {
   title: string;
   bodyMd: string;
   status: TaskStatus;
+  archivedAt: string | null;
 };
 
 type RunRow = {
@@ -34,15 +35,22 @@ export function TaskDrawer({ task, onClose }: { task: Task; onClose: () => void 
   const BASE = useBasePath();
   const { selectedProjectId: projectId } = useProject();
 
+  const [title, setTitle] = useState(task.title);
+  const [bodyMd, setBodyMd] = useState(task.bodyMd);
+  const [status, setStatus] = useState<TaskStatus>(task.status);
+  const [archivedAt, setArchivedAt] = useState<string | null>(task.archivedAt ?? null);
+
+  const [saving, setSaving] = useState(false);
   const [runs, setRuns] = useState<RunRow[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   const api = useMemo(
     () => ({
-      runs: `${BASE}/api/runs`
+      runs: `${BASE}/api/runs`,
+      task: `${BASE}/api/tasks/${encodeURIComponent(task.id)}`
     }),
-    [BASE]
+    [BASE, task.id]
   );
 
   async function refreshRuns() {
@@ -61,6 +69,71 @@ export function TaskDrawer({ task, onClose }: { task: Task; onClose: () => void 
     }
   }
 
+  async function saveTask() {
+    setErr(null);
+    setSaving(true);
+    try {
+      await j(
+        await fetch(api.task, {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            title,
+            body_md: bodyMd,
+            status,
+            archived: Boolean(archivedAt)
+          })
+        })
+      );
+    } catch (e: any) {
+      setErr(String(e?.message ?? e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function archiveTask() {
+    const ok = window.confirm('Archive this task?');
+    if (!ok) return;
+
+    setErr(null);
+    setSaving(true);
+    try {
+      await j(
+        await fetch(api.task, {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ archived: true })
+        })
+      );
+      setArchivedAt(new Date().toISOString());
+    } catch (e: any) {
+      setErr(String(e?.message ?? e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function restoreToInbox() {
+    setErr(null);
+    setSaving(true);
+    try {
+      await j(
+        await fetch(api.task, {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ archived: false, status: 'inbox' })
+        })
+      );
+      setArchivedAt(null);
+      setStatus('inbox');
+    } catch (e: any) {
+      setErr(String(e?.message ?? e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
   useEffect(() => {
     refreshRuns();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -73,12 +146,76 @@ export function TaskDrawer({ task, onClose }: { task: Task; onClose: () => void 
       <div className="absolute right-0 top-0 h-full w-full max-w-3xl border-l border-matrix-500/20 bg-bg-2/90 shadow-neon backdrop-blur">
         <div className="flex h-full flex-col">
           <div className="flex items-start justify-between border-b border-matrix-500/15 p-4">
-            <div>
+            <div className="min-w-0">
               <div className="text-xs text-zinc-400">Task</div>
-              <div className="text-lg font-semibold text-matrix-100">{task.title}</div>
-              <div className="mt-1 text-xs text-zinc-400">{task.id} · {task.status}</div>
-              {task.bodyMd ? <div className="mt-2 text-sm text-zinc-200">{task.bodyMd}</div> : null}
+
+              <input
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                className="mt-1 w-full min-w-0 rounded-lg border border-matrix-500/20 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:ring-1 focus:ring-matrix-500/40"
+              />
+
+              <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-zinc-400">
+                <span className="break-all">{task.id}</span>
+                <span>·</span>
+                <select
+                  value={status}
+                  onChange={(e) => setStatus(e.target.value as TaskStatus)}
+                  className="rounded-md border border-matrix-500/20 bg-black/30 px-2 py-1 text-xs text-zinc-100 outline-none"
+                >
+                  {['inbox', 'planned', 'in_progress', 'blocked', 'review', 'done'].map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+                </select>
+                {archivedAt ? (
+                  <span className="rounded-full bg-zinc-500/15 px-2 py-1 text-[11px] text-zinc-200 ring-1 ring-zinc-500/20">
+                    archived
+                  </span>
+                ) : null}
+              </div>
+
+              <textarea
+                value={bodyMd}
+                onChange={(e) => setBodyMd(e.target.value)}
+                placeholder="Task details…"
+                className="mt-3 w-full min-h-24 rounded-lg border border-matrix-500/20 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:ring-1 focus:ring-matrix-500/40"
+              />
+
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  onClick={saveTask}
+                  disabled={saving}
+                  className="rounded-lg bg-matrix-500/15 px-3 py-2 text-sm text-matrix-100 ring-1 ring-matrix-500/30 hover:bg-matrix-500/20 disabled:opacity-60"
+                >
+                  {saving ? 'Saving…' : 'Save'}
+                </button>
+
+                {!archivedAt ? (
+                  <button
+                    onClick={archiveTask}
+                    disabled={saving}
+                    className="rounded-lg bg-black/25 px-3 py-2 text-sm text-zinc-200 ring-1 ring-matrix-500/20 hover:bg-black/35 disabled:opacity-60"
+                  >
+                    Archive
+                  </button>
+                ) : (
+                  <button
+                    onClick={restoreToInbox}
+                    disabled={saving}
+                    className="rounded-lg bg-black/25 px-3 py-2 text-sm text-zinc-200 ring-1 ring-matrix-500/20 hover:bg-black/35 disabled:opacity-60"
+                  >
+                    Restore to inbox
+                  </button>
+                )}
+              </div>
+
+              {err ? (
+                <div className="mt-3 rounded-lg border border-red-500/30 bg-red-950/30 p-2 text-xs text-red-100">{err}</div>
+              ) : null}
             </div>
+
             <button
               onClick={onClose}
               className="rounded-lg bg-black/25 px-3 py-2 text-sm text-zinc-200 ring-1 ring-matrix-500/20 hover:bg-black/35"
@@ -99,8 +236,6 @@ export function TaskDrawer({ task, onClose }: { task: Task; onClose: () => void 
                 </button>
               </div>
 
-              {err ? <div className="rounded-lg border border-red-500/30 bg-red-950/30 p-2 text-xs text-red-100">{err}</div> : null}
-
               <div className="space-y-2">
                 {runs.length === 0 ? (
                   <div className="rounded-lg border border-matrix-500/10 bg-black/20 p-2 text-xs text-zinc-400">No runs yet.</div>
@@ -116,7 +251,7 @@ export function TaskDrawer({ task, onClose }: { task: Task; onClose: () => void 
                     }
                   >
                     <div className="flex items-center justify-between">
-                      <div className="font-medium">{r.id}</div>
+                      <div className="font-medium break-all">{r.id}</div>
                       <div className="text-[11px] text-zinc-400">{r.status}</div>
                     </div>
                     <div className="mt-1 text-[11px] text-zinc-500">profile: {r.modelProfile}</div>
@@ -126,10 +261,10 @@ export function TaskDrawer({ task, onClose }: { task: Task; onClose: () => void 
             </div>
 
             <div className="md:col-span-3">
-              {selectedRunId ? <RunTimeline runId={selectedRunId} /> : (
-                <div className="rounded-xl border border-matrix-500/20 bg-black/25 p-3 text-sm text-zinc-300">
-                  Select a run.
-                </div>
+              {selectedRunId ? (
+                <RunTimeline runId={selectedRunId} />
+              ) : (
+                <div className="rounded-xl border border-matrix-500/20 bg-black/25 p-3 text-sm text-zinc-300">Select a run.</div>
               )}
             </div>
           </div>

@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { asc, desc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq, isNull } from 'drizzle-orm';
 import { makeDb } from '@ocdash/db/client';
 import { tasks } from '@ocdash/db/schema';
 import { newId } from '@ocdash/shared';
@@ -11,15 +11,22 @@ export async function GET(req: Request) {
   const url = process.env.DATABASE_URL;
   if (!url) return NextResponse.json({ error: 'DATABASE_URL missing' }, { status: 500 });
 
-  const projectId = new URL(req.url).searchParams.get('project_id')?.trim();
+  const sp = new URL(req.url).searchParams;
+  const projectId = sp.get('project_id')?.trim();
+  const includeArchived = sp.get('include_archived') === '1';
+
   if (!projectId) return NextResponse.json({ error: 'project_id is required' }, { status: 400 });
 
   const { db, pool } = makeDb(url);
   try {
+    const where = includeArchived
+      ? eq(tasks.projectId, projectId)
+      : and(eq(tasks.projectId, projectId), isNull(tasks.archivedAt));
+
     const rows = await db
       .select()
       .from(tasks)
-      .where(eq(tasks.projectId, projectId))
+      .where(where)
       .orderBy(desc(tasks.updatedAt), asc(tasks.createdAt))
       .limit(500);
 

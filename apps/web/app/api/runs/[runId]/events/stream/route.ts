@@ -1,41 +1,27 @@
-import { eq, and, gte } from 'drizzle-orm';
+import { NextResponse } from 'next/server';
+import { and, eq, gte } from 'drizzle-orm';
+
 import { makeDb } from '@ocdash/db/client';
 import { events } from '@ocdash/db/schema';
-import type { OcdashEvent } from '@ocdash/shared';
 import { toSse } from '@ocdash/shared';
+import { asEventRow } from '../../../../_lib/eventlog';
 
 export const runtime = 'nodejs';
-
-function asEventRow(row: any): OcdashEvent {
-  return {
-    id: row.id,
-    ts: row.ts instanceof Date ? row.ts.toISOString() : String(row.ts),
-    seq: row.seq,
-    type: row.type,
-    source: row.source,
-    severity: row.severity,
-    project_id: row.projectId ?? undefined,
-    task_id: row.taskId ?? undefined,
-    thread_id: row.threadId ?? undefined,
-    run_id: row.runId ?? undefined,
-    step_id: row.stepId ?? undefined,
-    correlation_id: row.correlationId ?? undefined,
-    payload: row.payload ?? {}
-  } as OcdashEvent;
-}
 
 export async function GET(req: Request, { params }: { params: Promise<{ runId: string }> }) {
   const { runId } = await params;
   const url = process.env.DATABASE_URL;
-  if (!url) return new Response('DATABASE_URL missing', { status: 500 });
+  if (!url) return NextResponse.json({ error: 'DATABASE_URL missing' }, { status: 500 });
 
-  const afterSeq = Number(new URL(req.url).searchParams.get('after_seq') ?? '0');
+  const sp = new URL(req.url).searchParams;
+  const afterSeq = Number(sp.get('after_seq') ?? '0') || 0;
+
   const { db, pool } = makeDb(url);
 
-  const encoder = new TextEncoder();
   let closed = false;
+  const encoder = new TextEncoder();
 
-  const stream = new ReadableStream<Uint8Array>({
+  const stream = new ReadableStream({
     async start(controller) {
       const write = (s: string) => controller.enqueue(encoder.encode(s));
 
@@ -52,7 +38,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ runId: s
 
         for (const row of rows) {
           const ev = asEventRow(row);
-          write(toSse({ event: ev }));
+          write(toSse(ev));
           cursor = Math.max(cursor, ev.seq);
         }
 
