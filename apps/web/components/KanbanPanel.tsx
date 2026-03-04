@@ -56,7 +56,6 @@ export function KanbanPanel() {
       tasks: `${BASE}/api/tasks`,
       patchTask: (id: string) => `${BASE}/api/tasks/${encodeURIComponent(id)}`,
       runs: `${BASE}/api/runs`,
-      runPage: (id: string) => `${BASE}/runs/${encodeURIComponent(id)}`,
       projectEvents: (pid: string) => `${BASE}/api/projects/${encodeURIComponent(pid)}/events/stream`
     }),
     [BASE]
@@ -140,7 +139,7 @@ export function KanbanPanel() {
         body: JSON.stringify({ project_id: projectId, task_id: t.id, model_profile: 'balanced' })
       });
       const data = await j<{ run: { id: string } }>(res);
-      router.push(api.runPage(data.run.id));
+      router.push(`/runs/${encodeURIComponent(data.run.id)}`);
     } catch (e: any) {
       setErr(String(e?.message ?? e));
     }

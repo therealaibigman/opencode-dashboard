@@ -23,8 +23,7 @@ export function ChatPanel() {
   const api = useMemo(
     () => ({
       tasks: `${BASE}/api/tasks`,
-      runs: `${BASE}/api/runs`,
-      runPage: (id: string) => `${BASE}/runs/${encodeURIComponent(id)}`
+      runs: `${BASE}/api/runs`
     }),
     [BASE]
   );
@@ -37,7 +36,7 @@ export function ChatPanel() {
     });
     const data = await j<{ run: { id: string } }>(res);
     setLog((p) => [`Queued run ${data.run.id} (task: ${taskId ?? 'none'})`, ...p]);
-    router.push(api.runPage(data.run.id));
+    router.push(`/runs/${encodeURIComponent(data.run.id)}`);
   }
 
   return (

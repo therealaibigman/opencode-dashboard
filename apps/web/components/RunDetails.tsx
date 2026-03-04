@@ -46,8 +46,7 @@ export function RunDetails({ runId }: { runId: string }) {
     () => ({
       run: `${BASE}/api/runs/${encodeURIComponent(runId)}`,
       artifacts: `${BASE}/api/runs/${encodeURIComponent(runId)}/artifacts`,
-      artifact: (id: string) => `${BASE}/api/artifacts/${encodeURIComponent(id)}`,
-      home: `${BASE || ''}/`
+      artifact: (id: string) => `${BASE}/api/artifacts/${encodeURIComponent(id)}`
     }),
     [BASE, runId]
   );
@@ -65,9 +64,7 @@ export function RunDetails({ runId }: { runId: string }) {
       const r = await j<{ run: RunRow }>(await fetch(api.run, { cache: 'no-store' }));
       setRun(r.run);
 
-      const a = await j<{ artifacts: ArtifactStub[] }>(
-        await fetch(api.artifacts, { cache: 'no-store' })
-      );
+      const a = await j<{ artifacts: ArtifactStub[] }>(await fetch(api.artifacts, { cache: 'no-store' }));
       setArtifacts(a.artifacts);
     } catch (e: any) {
       setErr(String(e?.message ?? e));
@@ -77,9 +74,7 @@ export function RunDetails({ runId }: { runId: string }) {
   }
 
   async function loadArtifact(id: string) {
-    const data = await j<{ artifact: ArtifactFull }>(
-      await fetch(api.artifact(id), { cache: 'no-store' })
-    );
+    const data = await j<{ artifact: ArtifactFull }>(await fetch(api.artifact(id), { cache: 'no-store' }));
     setOpenArtifact(data.artifact);
   }
 
@@ -94,7 +89,7 @@ export function RunDetails({ runId }: { runId: string }) {
         <div className="min-w-0 space-y-1">
           <div className="text-xs text-zinc-400">Run</div>
           <div className="min-w-0 break-all text-lg font-semibold text-zinc-100">{runId}</div>
-          <a className="text-xs text-matrix-200/90 hover:underline" href={api.home}>
+          <a className="text-xs text-matrix-200/90 hover:underline" href={'/'}>
             ← Back to dashboard
           </a>
         </div>

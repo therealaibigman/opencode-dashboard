@@ -43,8 +43,7 @@ export function RunsPanel() {
 
   const api = useMemo(
     () => ({
-      runs: `${BASE}/api/runs?project_id=${encodeURIComponent(projectId)}`,
-      runPage: (id: string) => `${BASE}/runs/${encodeURIComponent(id)}`
+      runs: `${BASE}/api/runs?project_id=${encodeURIComponent(projectId)}`
     }),
     [BASE, projectId]
   );
@@ -98,15 +97,13 @@ export function RunsPanel() {
 
         {loading ? <div className="text-[11px] text-zinc-400">Loading…</div> : null}
 
-        {runs.length === 0 && !loading ? (
-          <div className="text-[11px] text-zinc-400">No runs yet.</div>
-        ) : null}
+        {runs.length === 0 && !loading ? <div className="text-[11px] text-zinc-400">No runs yet.</div> : null}
 
         <div className="space-y-2">
           {runs.map((r) => (
             <button
               key={r.id}
-              onClick={() => router.push(api.runPage(r.id))}
+              onClick={() => router.push(`/runs/${encodeURIComponent(r.id)}`)}
               className="block w-full min-w-0 rounded-xl border border-matrix-500/10 bg-black/25 p-3 text-left hover:bg-black/35"
             >
               <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
