@@ -1,6 +1,7 @@
 import './env.js';
 
 import { and, eq, sql } from 'drizzle-orm';
+import { spawn } from 'node:child_process';
 import { makeDb } from '@ocdash/db/client';
 import { artifacts, events, runs, tasks } from '@ocdash/db/schema';
 import { newId } from '@ocdash/shared';
@@ -8,12 +9,19 @@ import type { OcdashEvent } from '@ocdash/shared';
 import { requireEnv } from './env.js';
 import { ensureProjectWorkspace } from './workspaces.js';
 import { opencodeRun } from './opencode.js';
+import { extractUnifiedDiffFromText, writeTempPatch } from './patch.js';
+import { policyCheckCommand, policyCheckPath } from './policy.js';
 
 const DATABASE_URL = requireEnv('DATABASE_URL');
 const POLL_MS = Number(process.env.WORKER_POLL_INTERVAL_MS ?? '750');
 
 const WORKSPACES_ROOT =
   process.env.PROJECT_WORKSPACES_ROOT ?? '/home/exedev/.openclaw/workspace/opencode-workspaces';
+
+const AUTO_COMMANDS = (process.env.OC_DASH_AUTO_COMMANDS ?? 'npm test,npm run lint,npm run typecheck')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
 
 function nowIso() {
   return new Date().toISOString();
@@ -85,6 +93,45 @@ async function isRunCancelled(db: any, runId: string): Promise<boolean> {
   return rows?.[0]?.status === 'cancelled';
 }
 
+async function runCmd({
+  cwd,
+  cmd,
+  timeoutMs = 10 * 60 * 1000
+}: {
+  cwd: string;
+  cmd: string;
+  timeoutMs?: number;
+}): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  const dec = policyCheckCommand(cmd);
+  if (!dec.ok) return { exitCode: 126, stdout: '', stderr: `[policy] ${dec.reason}` };
+
+  const [bin, ...args] = cmd.split(/\s+/);
+  return await new Promise((resolve) => {
+    const child = spawn(bin!, args, { cwd, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
+
+    let stdout = '';
+    let stderr = '';
+
+    const t = setTimeout(() => {
+      stderr += `\n[worker] timeout after ${timeoutMs}ms`;
+      child.kill('SIGKILL');
+    }, timeoutMs);
+
+    child.stdout.on('data', (d) => (stdout += d.toString()));
+    child.stderr.on('data', (d) => (stderr += d.toString()));
+
+    child.on('close', (code) => {
+      clearTimeout(t);
+      resolve({ exitCode: code ?? 1, stdout, stderr });
+    });
+
+    child.on('error', (err) => {
+      clearTimeout(t);
+      resolve({ exitCode: 1, stdout, stderr: `${stderr}\n${String(err)}` });
+    });
+  });
+}
+
 async function processRun(db: any, runId: string) {
   const runRows = await db.select().from(runs).where(eq(runs.id, runId)).limit(1);
   const runRow = runRows[0];
@@ -144,7 +191,7 @@ async function processRun(db: any, runId: string) {
 
   const ws = await ensureProjectWorkspace({ root: WORKSPACES_ROOT, projectId });
   const msg = taskId
-    ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}\n\nDo the next best action. If code changes are needed, explain what you would change.`
+    ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}\n\nReturn a unified diff in a fenced \`\`\`diff block if code changes are needed. Keep dangerous commands out.\n\nDo the next best action.`
     : `Project ${projectId}: Do the next best action.`;
 
   const model = (process.env.OPENCODE_MODEL ?? '').trim() || undefined;
@@ -241,7 +288,6 @@ async function processRun(db: any, runId: string) {
   clearInterval(cancelTimer);
   cancelled = cancelled || result.cancelled === true;
 
-  // Don't flush progress after cancellation.
   if (!cancelled) await maybeEmitProgress();
 
   // Store full logs as artifacts
@@ -299,30 +345,6 @@ async function processRun(db: any, runId: string) {
       id: newId('evt'),
       ts: nowIso(),
       seq: seq++,
-      type: 'tool.call.failed',
-      source: 'worker',
-      severity: 'warn',
-      project_id: projectId,
-      task_id: taskId ?? undefined,
-      run_id: runId,
-      step_id: stepId,
-      payload: {
-        tool: 'opencode.run',
-        result: {
-          exit_code: result.exitCode,
-          cancelled: true,
-          stdout_artifact_id: stdoutId,
-          stderr_artifact_id: stderrId,
-          stdout_preview: clipPreview(result.stdout ?? ''),
-          stderr_preview: clipPreview(result.stderr ?? '')
-        }
-      }
-    });
-
-    await appendEventRow(db, {
-      id: newId('evt'),
-      ts: nowIso(),
-      seq: seq++,
       type: 'run.cancelled',
       source: 'worker',
       severity: 'warn',
@@ -336,44 +358,190 @@ async function processRun(db: any, runId: string) {
     return;
   }
 
-  if (result.exitCode === 0) {
+  // Approval gate: try to extract a diff and auto-apply it if policy allows.
+  const patch = extractUnifiedDiffFromText(result.stdout ?? '');
+  if (patch) {
+    const patchArtifactId = await writeArtifact({
+      db,
+      projectId,
+      runId,
+      stepId,
+      kind: 'patch',
+      name: 'proposed patch',
+      content: patch.patchText
+    });
+
+    await appendEventRow(db, {
+      id: newId('evt'),
+      ts: nowIso(),
+      seq: seq++,
+      type: 'artifact.created',
+      source: 'worker',
+      severity: 'info',
+      project_id: projectId,
+      task_id: taskId ?? undefined,
+      run_id: runId,
+      step_id: stepId,
+      payload: { artifact: { id: patchArtifactId, kind: 'patch', name: 'proposed patch' } }
+    });
+
+    // policy: all touched paths must be inside workspace and not sensitive
+    for (const p of patch.touchedPaths) {
+      const dec = policyCheckPath({ workspace: ws, filePath: p });
+      if (!dec.ok) {
+        await db.update(runs).set({ status: 'needs_approval' }).where(eq(runs.id, runId));
+
+        await appendEventRow(db, {
+          id: newId('evt'),
+          ts: nowIso(),
+          seq: seq++,
+          type: 'approval.requested',
+          source: 'worker',
+          severity: 'warn',
+          project_id: projectId,
+          task_id: taskId ?? undefined,
+          run_id: runId,
+          payload: { reason: dec.reason, patch_artifact_id: patchArtifactId }
+        });
+
+        return;
+      }
+    }
+
+    // apply patch
+    const patchFile = await writeTempPatch({ dir: ws, patchText: patch.patchText });
+    const applyRes = await runCmd({ cwd: ws, cmd: `git apply ${patchFile}` });
+
+    const applyOutId = await writeArtifact({
+      db,
+      projectId,
+      runId,
+      stepId,
+      kind: 'stdout',
+      name: 'git apply stdout',
+      content: applyRes.stdout
+    });
+
+    const applyErrId = await writeArtifact({
+      db,
+      projectId,
+      runId,
+      stepId,
+      kind: 'stderr',
+      name: 'git apply stderr',
+      content: applyRes.stderr
+    });
+
+    await appendEventRow(db, {
+      id: newId('evt'),
+      ts: nowIso(),
+      seq: seq++,
+      type: 'approval.resolved',
+      source: 'worker',
+      severity: applyRes.exitCode === 0 ? 'info' : 'error',
+      project_id: projectId,
+      task_id: taskId ?? undefined,
+      run_id: runId,
+      payload: {
+        auto: true,
+        action: 'apply_patch',
+        exit_code: applyRes.exitCode,
+        stdout_artifact_id: applyOutId,
+        stderr_artifact_id: applyErrId
+      }
+    });
+
+    if (applyRes.exitCode !== 0) {
+      await db.update(runs).set({ status: 'failed', finishedAt: new Date() }).where(eq(runs.id, runId));
+      return;
+    }
+
+    // run allowlisted commands
+    for (const cmd of AUTO_COMMANDS) {
+      const res = await runCmd({ cwd: ws, cmd });
+
+      const outId = await writeArtifact({ db, projectId, runId, stepId, kind: 'stdout', name: `${cmd} stdout`, content: res.stdout });
+      const errId = await writeArtifact({ db, projectId, runId, stepId, kind: 'stderr', name: `${cmd} stderr`, content: res.stderr });
+
+      await appendEventRow(db, {
+        id: newId('evt'),
+        ts: nowIso(),
+        seq: seq++,
+        type: 'tool.call.completed',
+        source: 'worker',
+        severity: res.exitCode === 0 ? 'info' : 'error',
+        project_id: projectId,
+        task_id: taskId ?? undefined,
+        run_id: runId,
+        step_id: stepId,
+        payload: {
+          tool: 'cmd',
+          args: { cmd },
+          result: { exit_code: res.exitCode, stdout_artifact_id: outId, stderr_artifact_id: errId }
+        }
+      });
+
+      if (res.exitCode !== 0) {
+        await db.update(runs).set({ status: 'failed', finishedAt: new Date() }).where(eq(runs.id, runId));
+        return;
+      }
+    }
+
+    // commit automatically
+    const addRes = await runCmd({ cwd: ws, cmd: 'git add -A' });
+    if (addRes.exitCode !== 0) {
+      await db.update(runs).set({ status: 'failed', finishedAt: new Date() }).where(eq(runs.id, runId));
+      return;
+    }
+
+    const commitMsg = `ocdash: apply patch for ${taskId ?? runId}`;
+    const commitRes = await runCmd({ cwd: ws, cmd: `git commit -m "${commitMsg.replace(/"/g, "'")}"` });
+
+    const cOut = await writeArtifact({ db, projectId, runId, stepId, kind: 'stdout', name: 'git commit stdout', content: commitRes.stdout });
+    const cErr = await writeArtifact({ db, projectId, runId, stepId, kind: 'stderr', name: 'git commit stderr', content: commitRes.stderr });
+
     await appendEventRow(db, {
       id: newId('evt'),
       ts: nowIso(),
       seq: seq++,
       type: 'tool.call.completed',
       source: 'worker',
-      severity: 'info',
+      severity: commitRes.exitCode === 0 ? 'info' : 'error',
       project_id: projectId,
       task_id: taskId ?? undefined,
       run_id: runId,
       step_id: stepId,
       payload: {
-        tool: 'opencode.run',
-        result: {
-          exit_code: result.exitCode,
-          stdout_artifact_id: stdoutId,
-          stderr_artifact_id: stderrId,
-          stdout_preview: clipPreview(result.stdout ?? ''),
-          stderr_preview: clipPreview(result.stderr ?? '')
-        }
+        tool: 'git.commit',
+        args: { message: commitMsg },
+        result: { exit_code: commitRes.exitCode, stdout_artifact_id: cOut, stderr_artifact_id: cErr }
       }
     });
 
+    if (commitRes.exitCode !== 0) {
+      await db.update(runs).set({ status: 'failed', finishedAt: new Date() }).where(eq(runs.id, runId));
+      return;
+    }
+
+    await db.update(runs).set({ status: 'succeeded', finishedAt: new Date() }).where(eq(runs.id, runId));
     await appendEventRow(db, {
       id: newId('evt'),
       ts: nowIso(),
       seq: seq++,
-      type: 'run.step.completed',
+      type: 'run.completed',
       source: 'worker',
       severity: 'info',
       project_id: projectId,
       task_id: taskId ?? undefined,
       run_id: runId,
-      step_id: stepId,
-      payload: { step: { name: 'opencode.run' }, message: 'OpenCode run finished' }
+      payload: { message: 'Run completed (auto-applied patch + checks + commit)' }
     });
 
+    return;
+  }
+
+  // Default outcome (no patch path): keep prior behavior.
+  if (result.exitCode === 0) {
     await appendEventRow(db, {
       id: newId('evt'),
       ts: nowIso(),
@@ -389,43 +557,6 @@ async function processRun(db: any, runId: string) {
 
     await db.update(runs).set({ status: 'succeeded', finishedAt: new Date() }).where(eq(runs.id, runId));
   } else {
-    await appendEventRow(db, {
-      id: newId('evt'),
-      ts: nowIso(),
-      seq: seq++,
-      type: 'tool.call.failed',
-      source: 'worker',
-      severity: 'error',
-      project_id: projectId,
-      task_id: taskId ?? undefined,
-      run_id: runId,
-      step_id: stepId,
-      payload: {
-        tool: 'opencode.run',
-        result: {
-          exit_code: result.exitCode,
-          stdout_artifact_id: stdoutId,
-          stderr_artifact_id: stderrId,
-          stdout_preview: clipPreview(result.stdout ?? ''),
-          stderr_preview: clipPreview(result.stderr ?? '')
-        }
-      }
-    });
-
-    await appendEventRow(db, {
-      id: newId('evt'),
-      ts: nowIso(),
-      seq: seq++,
-      type: 'run.step.failed',
-      source: 'worker',
-      severity: 'error',
-      project_id: projectId,
-      task_id: taskId ?? undefined,
-      run_id: runId,
-      step_id: stepId,
-      payload: { step: { name: 'opencode.run' }, message: 'OpenCode run failed' }
-    });
-
     await appendEventRow(db, {
       id: newId('evt'),
       ts: nowIso(),
