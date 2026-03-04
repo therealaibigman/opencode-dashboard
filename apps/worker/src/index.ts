@@ -25,6 +25,8 @@ const AUTO_COMMANDS = (process.env.OC_DASH_AUTO_COMMANDS ?? 'npm test,npm run li
   .map((s) => s.trim())
   .filter(Boolean);
 
+const REQUIRE_APPROVAL = String(process.env.OC_DASH_REQUIRE_APPROVAL ?? '') === '1';
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -416,6 +418,23 @@ async function processRun(db: any, runId: string) {
       step_id: stepId,
       payload: { artifact: { id: patchArtifactId, kind: 'patch', name: 'proposed patch' } }
     });
+
+    if (REQUIRE_APPROVAL) {
+      await db.update(runs).set({ status: 'needs_approval' }).where(eq(runs.id, runId));
+      await appendEventRow(db, {
+        id: newId('evt'),
+        ts: nowIso(),
+        seq: seq++,
+        type: 'approval.requested',
+        source: 'worker',
+        severity: 'warn',
+        project_id: projectId,
+        task_id: taskId ?? undefined,
+        run_id: runId,
+        payload: { reason: 'OC_DASH_REQUIRE_APPROVAL=1', patch_artifact_id: patchArtifactId }
+      });
+      return;
+    }
 
     // policy: all touched paths must be inside workspace and not sensitive
     for (const p of patch.touchedPaths) {
