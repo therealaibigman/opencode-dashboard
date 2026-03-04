@@ -6,6 +6,12 @@ import path from 'node:path';
 
 import { makeDb } from '@ocdash/db/client';
 import { artifacts, runs } from '@ocdash/db/schema';
+import {
+  extractAddedLines,
+  policyCheckCommand,
+  policyCheckPath,
+  wrapHunkAsFilePatch
+} from '@ocdash/shared';
 import { newId } from '@ocdash/shared';
 import { appendProjectEvent } from '../../../_lib/eventlog';
 
@@ -13,50 +19,6 @@ export const runtime = 'nodejs';
 
 const WORKSPACES_ROOT =
   process.env.PROJECT_WORKSPACES_ROOT ?? '/home/exedev/.openclaw/workspace/opencode-workspaces';
-
-function wrapHunkAsFilePatch(patchText: string, filePath: string) {
-  const hunks = patchText.trimEnd();
-  return [
-    `diff --git a/${filePath} b/${filePath}`,
-    `--- a/${filePath}`,
-    `+++ b/${filePath}`,
-    hunks,
-    ''
-  ].join('\n');
-}
-
-function policyAllowCommand(cmd: string): { ok: true } | { ok: false; reason: string } {
-  const s = cmd.trim();
-  const block = [
-    /\brm\s+-rf\b/i,
-    /\brm\s+-fr\b/i,
-    /\bmkfs\b/i,
-    /\bdd\b/i,
-    /\bshutdown\b/i,
-    /\breboot\b/i,
-    /\bsudo\b/i,
-    /\bcurl\b[^\n]*\|\s*sh\b/i,
-    /\bwget\b[^\n]*\|\s*sh\b/i
-  ];
-  if (!s) return { ok: false, reason: 'empty command' };
-  if (block.some((re) => re.test(s))) return { ok: false, reason: 'blocked command pattern' };
-
-  const allow = [
-    /^git\s+apply\s+.+$/,
-    /^git\s+add\s+-A$/,
-    /^git\s+commit\s+-m\s+.+$/,
-    /^git\s+init$/,
-    /^git\s+config\s+user\.email\s+.+$/,
-    /^git\s+config\s+user\.name\s+.+$/,
-    /^npm\s+test$/,
-    /^npm\s+run\s+lint$/,
-    /^npm\s+run\s+typecheck$/,
-    /^npm\s+run\s+build$/,
-    /^patch\s+-p1\b.*$/
-  ];
-  if (!allow.some((re) => re.test(s))) return { ok: false, reason: 'command not on allowlist' };
-  return { ok: true };
-}
 
 function extractTouchedPaths(patchText: string): string[] {
   const touched = new Set<string>();
@@ -67,26 +29,8 @@ function extractTouchedPaths(patchText: string): string[] {
   return [...touched];
 }
 
-function ensureInWorkspace(ws: string, filePath: string) {
-  const abs = path.resolve(ws, filePath);
-  const root = path.resolve(ws);
-  if (!abs.startsWith(root + path.sep) && abs !== root) {
-    return { ok: false as const, reason: `path escapes workspace: ${filePath}` };
-  }
-  return { ok: true as const };
-}
-
-function extractAddedLines(patchText: string): string[] {
-  const added: string[] = [];
-  for (const ln of patchText.split('\n')) {
-    if (ln.startsWith('+++') || ln.startsWith('---') || ln.startsWith('diff --git') || ln.startsWith('@@')) continue;
-    if (ln.startsWith('+') && !ln.startsWith('+++')) added.push(ln.slice(1));
-  }
-  return added.filter((s) => s.trim().length > 0);
-}
-
 async function runCmd(cwd: string, cmd: string, timeoutMs = 10 * 60 * 1000) {
-  const dec = policyAllowCommand(cmd);
+  const dec = policyCheckCommand(cmd);
   if (!dec.ok) return { exitCode: 126, stdout: '', stderr: `[policy] ${dec.reason}` };
 
   const [bin, ...args] = cmd.split(/\s+/);
@@ -175,10 +119,7 @@ export async function POST(_req: Request, { params }: { params: Promise<{ runId:
 
     const r = rrows[0]!;
     if (r.status !== 'needs_approval') {
-      return NextResponse.json(
-        { error: `run is not in needs_approval (status=${r.status})` },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: `run is not in needs_approval (status=${r.status})` }, { status: 400 });
     }
 
     // Find latest patch artifact.
@@ -200,23 +141,18 @@ export async function POST(_req: Request, { params }: { params: Promise<{ runId:
 
     // If patch is just a hunk, assume README.md for testing.
     if (!/^diff --git\s+/m.test(patchText) && patchText.trimStart().startsWith('@@')) {
-      patchText = wrapHunkAsFilePatch(patchText, 'README.md');
+      patchText = wrapHunkAsFilePatch({ patchText, filePath: 'README.md' });
     }
 
     // Hard stop: never allow patch touching outside workspace.
     const touched = extractTouchedPaths(patchText);
     for (const p of touched) {
-      const dec = ensureInWorkspace(ws, p);
-      if (!dec.ok) {
-        return NextResponse.json({ error: dec.reason }, { status: 400 });
-      }
+      const dec = policyCheckPath({ workspace: ws, filePath: p });
+      if (!dec.ok) return NextResponse.json({ error: dec.reason }, { status: 400 });
     }
 
     // Mark running.
-    await db
-      .update(runs)
-      .set({ status: 'running' })
-      .where(and(eq(runs.id, rid), inArray(runs.status, ['needs_approval'])));
+    await db.update(runs).set({ status: 'running' }).where(and(eq(runs.id, rid), inArray(runs.status, ['needs_approval'])));
 
     const stepId = 'stp_manual_approval';
 
@@ -228,7 +164,6 @@ export async function POST(_req: Request, { params }: { params: Promise<{ runId:
     let method = 'git apply';
 
     if (applyRes.exitCode !== 0) {
-      // fallback to GNU patch (fuzz/offset)
       const p = await runCmd(ws, `patch -p1 --forward --batch -i ${patchFile}`);
       method = 'patch -p1';
       applyRes = {
@@ -238,7 +173,6 @@ export async function POST(_req: Request, { params }: { params: Promise<{ runId:
       };
     }
 
-    // last-resort: README-only patch that doesn't apply cleanly -> append added lines
     if (applyRes.exitCode !== 0 && touched.length === 1 && touched[0] === 'README.md') {
       const added = extractAddedLines(patchText);
       const readmePath = path.join(ws, 'README.md');
@@ -253,31 +187,11 @@ export async function POST(_req: Request, { params }: { params: Promise<{ runId:
 
       await fs.writeFile(readmePath, next, 'utf8');
       method = 'manual-append-readme';
-      applyRes = {
-        exitCode: 0,
-        stdout: `[api] applied README.md changes by appending ${added.length} line(s)`,
-        stderr: ''
-      };
+      applyRes = { exitCode: 0, stdout: `[api] applied README.md changes by appending ${added.length} line(s)`, stderr: '' };
     }
 
-    const applyOutId = await writeArtifact({
-      db,
-      projectId: r.projectId,
-      runId: rid,
-      stepId,
-      kind: 'stdout',
-      name: `apply patch stdout (${method})`,
-      content: applyRes.stdout
-    });
-    const applyErrId = await writeArtifact({
-      db,
-      projectId: r.projectId,
-      runId: rid,
-      stepId,
-      kind: 'stderr',
-      name: `apply patch stderr (${method})`,
-      content: applyRes.stderr
-    });
+    const applyOutId = await writeArtifact({ db, projectId: r.projectId, runId: rid, stepId, kind: 'stdout', name: `apply patch stdout (${method})`, content: applyRes.stdout });
+    const applyErrId = await writeArtifact({ db, projectId: r.projectId, runId: rid, stepId, kind: 'stderr', name: `apply patch stderr (${method})`, content: applyRes.stderr });
 
     await appendProjectEvent({
       databaseUrl: url,
@@ -286,22 +200,12 @@ export async function POST(_req: Request, { params }: { params: Promise<{ runId:
       runId: rid,
       type: 'approval.resolved',
       severity: applyRes.exitCode === 0 ? 'info' : 'error',
-      payload: {
-        auto: false,
-        approved: true,
-        action: 'apply_patch',
-        method,
-        stdout_artifact_id: applyOutId,
-        stderr_artifact_id: applyErrId
-      }
+      payload: { auto: false, approved: true, action: 'apply_patch', method, stdout_artifact_id: applyOutId, stderr_artifact_id: applyErrId }
     });
 
     if (applyRes.exitCode !== 0) {
       await db.update(runs).set({ status: 'failed', finishedAt: new Date() }).where(eq(runs.id, rid));
-      return NextResponse.json(
-        { ok: false, error: 'apply patch failed', stderr_artifact_id: applyErrId },
-        { status: 500 }
-      );
+      return NextResponse.json({ ok: false, error: 'apply patch failed', stderr_artifact_id: applyErrId }, { status: 500 });
     }
 
     // checks (skip if no package.json)
@@ -329,30 +233,11 @@ export async function POST(_req: Request, { params }: { params: Promise<{ runId:
       const cmds = ['npm test', 'npm run lint', 'npm run typecheck'];
       for (const cmd of cmds) {
         const res = await runCmd(ws, cmd);
-        const outId = await writeArtifact({
-          db,
-          projectId: r.projectId,
-          runId: rid,
-          stepId,
-          kind: 'stdout',
-          name: `${cmd} stdout`,
-          content: res.stdout
-        });
-        const errId = await writeArtifact({
-          db,
-          projectId: r.projectId,
-          runId: rid,
-          stepId,
-          kind: 'stderr',
-          name: `${cmd} stderr`,
-          content: res.stderr
-        });
+        const outId = await writeArtifact({ db, projectId: r.projectId, runId: rid, stepId, kind: 'stdout', name: `${cmd} stdout`, content: res.stdout });
+        const errId = await writeArtifact({ db, projectId: r.projectId, runId: rid, stepId, kind: 'stderr', name: `${cmd} stderr`, content: res.stderr });
         if (res.exitCode !== 0) {
           await db.update(runs).set({ status: 'failed', finishedAt: new Date() }).where(eq(runs.id, rid));
-          return NextResponse.json(
-            { ok: false, error: `${cmd} failed`, stdout_artifact_id: outId, stderr_artifact_id: errId },
-            { status: 500 }
-          );
+          return NextResponse.json({ ok: false, error: `${cmd} failed`, stdout_artifact_id: outId, stderr_artifact_id: errId }, { status: 500 });
         }
       }
     }
@@ -361,42 +246,16 @@ export async function POST(_req: Request, { params }: { params: Promise<{ runId:
     await runCmd(ws, 'git add -A');
     const commitMsg = `ocdash: approve patch for ${r.taskId ?? rid}`;
     const commitRes = await runCmd(ws, `git commit -m "${commitMsg.replace(/"/g, "'")}"`);
-    const cOut = await writeArtifact({
-      db,
-      projectId: r.projectId,
-      runId: rid,
-      stepId,
-      kind: 'stdout',
-      name: 'git commit stdout',
-      content: commitRes.stdout
-    });
-    const cErr = await writeArtifact({
-      db,
-      projectId: r.projectId,
-      runId: rid,
-      stepId,
-      kind: 'stderr',
-      name: 'git commit stderr',
-      content: commitRes.stderr
-    });
+    const cOut = await writeArtifact({ db, projectId: r.projectId, runId: rid, stepId, kind: 'stdout', name: 'git commit stdout', content: commitRes.stdout });
+    const cErr = await writeArtifact({ db, projectId: r.projectId, runId: rid, stepId, kind: 'stderr', name: 'git commit stderr', content: commitRes.stderr });
 
     if (commitRes.exitCode !== 0) {
       await db.update(runs).set({ status: 'failed', finishedAt: new Date() }).where(eq(runs.id, rid));
-      return NextResponse.json(
-        { ok: false, error: 'git commit failed', stdout_artifact_id: cOut, stderr_artifact_id: cErr },
-        { status: 500 }
-      );
+      return NextResponse.json({ ok: false, error: 'git commit failed', stdout_artifact_id: cOut, stderr_artifact_id: cErr }, { status: 500 });
     }
 
     await db.update(runs).set({ status: 'succeeded', finishedAt: new Date() }).where(eq(runs.id, rid));
-    await appendProjectEvent({
-      databaseUrl: url,
-      projectId: r.projectId,
-      taskId: r.taskId ?? null,
-      runId: rid,
-      type: 'run.completed',
-      payload: { message: 'Run completed (manual approval applied patch + checks + commit)' }
-    });
+    await appendProjectEvent({ databaseUrl: url, projectId: r.projectId, taskId: r.taskId ?? null, runId: rid, type: 'run.completed', payload: { message: 'Run completed (manual approval applied patch + checks + commit)' } });
 
     return NextResponse.json({ ok: true }, { status: 200 });
   } finally {
