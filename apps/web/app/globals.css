@@ -75,6 +75,17 @@ html.light .text-matrix-300 {
   color: var(--matrix-ink) !important;
 }
 
+/* Fix bright semantic labels in light mode */
+html.light .text-yellow-100,
+html.light .text-yellow-50 {
+  color: rgb(113 63 18) !important; /* amber-900 */
+}
+
+html.light .text-red-100,
+html.light .text-red-50 {
+  color: rgb(127 29 29) !important; /* red-900 */
+}
+
 html.light .bg-black\/15,
 html.light .bg-black\/20,
 html.light .bg-black\/25,
