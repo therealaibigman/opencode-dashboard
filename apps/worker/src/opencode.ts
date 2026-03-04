@@ -52,6 +52,23 @@ export async function opencodeRun({
     return { exitCode: 0, stdout: fake + '\n', stderr: '' };
   }
 
+function killTree(child: any) {
+  try {
+    // If detached, child.pid is process group leader; kill the whole group.
+    if (typeof child?.pid === 'number') {
+      try {
+        process.kill(-child.pid, 'SIGKILL');
+        return;
+      } catch {
+        // fallback
+      }
+    }
+    child.kill('SIGKILL');
+  } catch {
+    // ignore
+  }
+}
+
   return await new Promise((resolve) => {
     const m = (model ?? process.env.OPENCODE_MODEL ?? '').trim();
 
@@ -61,7 +78,8 @@ export async function opencodeRun({
     const child = spawn('opencode', args, {
       cwd,
       env: process.env,
-      stdio: ['ignore', 'pipe', 'pipe']
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: true
     });
 
     let stdout = '';
@@ -74,7 +92,7 @@ export async function opencodeRun({
       stderr += msg;
       onStderr?.(msg);
       try {
-        child.kill('SIGKILL');
+        killTree(child);
       } catch {
         // ignore
       }
@@ -88,7 +106,7 @@ export async function opencodeRun({
       const msg = `\n[worker] timeout after ${timeoutMs}ms`;
       stderr += msg;
       onStderr?.(msg);
-      child.kill('SIGKILL');
+      killTree(child);
     }, timeoutMs);
 
     child.stdout.on('data', (d) => {

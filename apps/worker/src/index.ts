@@ -647,9 +647,20 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
 async function main() {
   const { db } = makeDb(DATABASE_URL);
 
+    let backoffMs = 0;
+
   // eslint-disable-next-line no-constant-condition
   while (true) {
-    const queued = await db.select({ id: runs.id }).from(runs).where(eq(runs.status, 'queued')).limit(1);
+    let queued: { id: string }[] = [];
+    try {
+      queued = await db.select({ id: runs.id }).from(runs).where(eq(runs.status, 'queued')).limit(1);
+      backoffMs = 0;
+    } catch (err) {
+      backoffMs = backoffMs ? Math.min(backoffMs * 2, 10_000) : 250;
+      console.error('[worker] DB poll failed; backing off', backoffMs, err);
+      await new Promise((r) => setTimeout(r, backoffMs));
+      continue;
+    }
 
     if (queued.length) {
       const runId = queued[0]!.id;

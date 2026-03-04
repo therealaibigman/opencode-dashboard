@@ -5,7 +5,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 import { makeDb } from '@ocdash/db/client';
-import { artifacts, runs } from '@ocdash/db/schema';
+import { artifacts, projects, runs } from '@ocdash/db/schema';
 import {
   extractAddedLines,
   extractTouchedPaths,
@@ -28,6 +28,35 @@ async function runCmd(cwd: string, cmd: string, timeoutMs = 10 * 60 * 1000) {
   const [bin, ...args] = cmd.split(/\s+/);
   return await new Promise<{ exitCode: number; stdout: string; stderr: string }>((resolve) => {
     const child = spawn(bin!, args, { cwd, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+
+    const t = setTimeout(() => {
+      stderr += `\n[api] timeout after ${timeoutMs}ms`;
+      child.kill('SIGKILL');
+    }, timeoutMs);
+
+    child.stdout.on('data', (d) => (stdout += d.toString()));
+    child.stderr.on('data', (d) => (stderr += d.toString()));
+
+    child.on('close', (code) => {
+      clearTimeout(t);
+      resolve({ exitCode: code ?? 1, stdout, stderr });
+    });
+
+    child.on('error', (err) => {
+      clearTimeout(t);
+      resolve({ exitCode: 1, stdout, stderr: `${stderr}\n${String(err)}` });
+    });
+  });
+}
+
+async function runCmdShell(cwd: string, cmd: string, timeoutMs = 10 * 60 * 1000) {
+  const dec = policyCheckCommand(cmd);
+  if (!dec.ok) return { exitCode: 126, stdout: '', stderr: `[policy] ${dec.reason}` };
+
+  return await new Promise<{ exitCode: number; stdout: string; stderr: string }>((resolve) => {
+    const child = spawn('bash', ['-lc', cmd], { cwd, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
 
@@ -81,6 +110,42 @@ async function writeArtifact({
   return id;
 }
 
+async function createGithubPr({
+  ws,
+  runId,
+  baseBranch,
+  title,
+  body
+}: {
+  ws: string;
+  runId: string;
+  baseBranch: string;
+  title: string;
+  body: string;
+}): Promise<{ ok: true; url: string } | { ok: false; error: string }> {
+  const rem = await runCmd(ws, 'git remote');
+  if (rem.exitCode !== 0) return { ok: false, error: rem.stderr || 'git remote failed' };
+  const remotes = rem.stdout.split(/\s+/).map((x) => x.trim()).filter(Boolean);
+  if (!remotes.includes('origin')) return { ok: false, error: 'no origin remote configured' };
+
+  const branch = `ocdash/run_${runId}`;
+
+  const b = await runCmd(ws, `git checkout -B ${branch}`);
+  if (b.exitCode !== 0) return { ok: false, error: b.stderr || b.stdout || 'git checkout failed' };
+
+  const push = await runCmd(ws, `git push -u origin ${branch}`);
+  if (push.exitCode !== 0) return { ok: false, error: push.stderr || push.stdout || 'git push failed' };
+
+  const cmd = `gh pr create --base ${baseBranch} --head ${branch} --title ${JSON.stringify(title)} --body ${JSON.stringify(body)}`;
+  const pr = await runCmdShell(ws, cmd);
+  if (pr.exitCode !== 0) return { ok: false, error: pr.stderr || pr.stdout || 'gh pr create failed' };
+
+  const url = (pr.stdout.trim().split(/\s+/).find((x) => x.startsWith('http')) ?? '').trim();
+  if (!url) return { ok: false, error: `PR created but URL not detected: ${pr.stdout.trim()}` };
+
+  return { ok: true, url };
+}
+
 async function ensureGitRepo(ws: string) {
   await runCmd(ws, 'git init');
   await runCmd(ws, 'git config user.email ocdash@local');
@@ -110,6 +175,10 @@ export async function POST(_req: Request, { params }: { params: Promise<{ runId:
     if (!rrows.length) return NextResponse.json({ error: 'not found' }, { status: 404 });
 
     const r = rrows[0]!;
+
+    const projRows = await db.select().from(projects).where(eq(projects.id, r.projectId)).limit(1);
+    const proj = projRows[0];
+    const baseBranch = String((proj as any)?.defaultBranch ?? 'main') || 'main';
     if (r.status !== 'needs_approval') {
       return NextResponse.json({ error: `run is not in needs_approval (status=${r.status})` }, { status: 400 });
     }
@@ -244,6 +313,53 @@ export async function POST(_req: Request, { params }: { params: Promise<{ runId:
     if (commitRes.exitCode !== 0) {
       await db.update(runs).set({ status: 'failed', finishedAt: new Date() }).where(eq(runs.id, rid));
       return NextResponse.json({ ok: false, error: 'git commit failed', stdout_artifact_id: cOut, stderr_artifact_id: cErr }, { status: 500 });
+    }
+
+    // Optional: create a GitHub PR (requires origin remote + gh auth).
+    const prTitle = `ocdash: ${r.taskId ?? rid}`;
+    const prBody = `Automated changes from OpenCode Dashboard.\n\nRun: ${rid}\nProject: ${r.projectId}\nTask: ${r.taskId ?? '(none)'}\n`;
+
+    const prRes = await createGithubPr({ ws, runId: rid, baseBranch, title: prTitle, body: prBody });
+
+    if (prRes.ok) {
+      const prArtId = await writeArtifact({
+        db,
+        projectId: r.projectId,
+        runId: rid,
+        stepId,
+        kind: 'github_pr',
+        name: 'GitHub PR',
+        content: prRes.url + '\n'
+      });
+
+      await appendProjectEvent({
+        databaseUrl: url,
+        projectId: r.projectId,
+        taskId: r.taskId ?? null,
+        runId: rid,
+        type: 'tool.call.completed',
+        payload: { tool: 'github.pr.create', url: prRes.url, artifact_id: prArtId }
+      });
+    } else {
+      const prErrId = await writeArtifact({
+        db,
+        projectId: r.projectId,
+        runId: rid,
+        stepId,
+        kind: 'stderr',
+        name: 'github pr create failed',
+        content: String(prRes.error)
+      });
+
+      await appendProjectEvent({
+        databaseUrl: url,
+        projectId: r.projectId,
+        taskId: r.taskId ?? null,
+        runId: rid,
+        type: 'tool.call.failed',
+        severity: 'warn',
+        payload: { tool: 'github.pr.create', error: prRes.error, stderr_artifact_id: prErrId }
+      });
     }
 
     await db.update(runs).set({ status: 'succeeded', finishedAt: new Date() }).where(eq(runs.id, rid));
