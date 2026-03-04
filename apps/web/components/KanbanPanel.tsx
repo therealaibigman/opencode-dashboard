@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { useBasePath } from './useBasePath';
 import { useProject } from './ProjectContext';
 import { TaskDrawer } from './TaskDrawer';
@@ -39,6 +40,7 @@ function nextStatus(s: TaskStatus, dir: -1 | 1): TaskStatus {
 
 export function KanbanPanel() {
   const BASE = useBasePath();
+  const router = useRouter();
   const { selectedProjectId: projectId } = useProject();
 
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -54,6 +56,7 @@ export function KanbanPanel() {
       tasks: `${BASE}/api/tasks`,
       patchTask: (id: string) => `${BASE}/api/tasks/${encodeURIComponent(id)}`,
       runs: `${BASE}/api/runs`,
+      runPage: (id: string) => `${BASE}/runs/${encodeURIComponent(id)}`,
       projectEvents: (pid: string) => `${BASE}/api/projects/${encodeURIComponent(pid)}/events/stream`
     }),
     [BASE]
@@ -129,11 +132,18 @@ export function KanbanPanel() {
   }
 
   async function queueRun(t: Task) {
-    await fetch(api.runs, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ project_id: projectId, task_id: t.id, model_profile: 'balanced' })
-    });
+    setErr(null);
+    try {
+      const res = await fetch(api.runs, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ project_id: projectId, task_id: t.id, model_profile: 'balanced' })
+      });
+      const data = await j<{ run: { id: string } }>(res);
+      router.push(api.runPage(data.run.id));
+    } catch (e: any) {
+      setErr(String(e?.message ?? e));
+    }
   }
 
   const by = COLS.reduce((acc, c) => {

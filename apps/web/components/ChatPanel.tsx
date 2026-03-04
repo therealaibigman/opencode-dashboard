@@ -1,6 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { useBasePath } from './useBasePath';
 import { useProject } from './ProjectContext';
 import { EventFeed } from './EventFeed';
@@ -12,6 +13,7 @@ async function j<T>(res: Response): Promise<T> {
 
 export function ChatPanel() {
   const BASE = useBasePath();
+  const router = useRouter();
   const { selectedProjectId: projectId } = useProject();
 
   const [title, setTitle] = useState('');
@@ -21,7 +23,8 @@ export function ChatPanel() {
   const api = useMemo(
     () => ({
       tasks: `${BASE}/api/tasks`,
-      runs: `${BASE}/api/runs`
+      runs: `${BASE}/api/runs`,
+      runPage: (id: string) => `${BASE}/runs/${encodeURIComponent(id)}`
     }),
     [BASE]
   );
@@ -34,6 +37,7 @@ export function ChatPanel() {
     });
     const data = await j<{ run: { id: string } }>(res);
     setLog((p) => [`Queued run ${data.run.id} (task: ${taskId ?? 'none'})`, ...p]);
+    router.push(api.runPage(data.run.id));
   }
 
   return (
@@ -71,7 +75,12 @@ export function ChatPanel() {
                 const res = await fetch(api.tasks, {
                   method: 'POST',
                   headers: { 'content-type': 'application/json' },
-                  body: JSON.stringify({ project_id: projectId, title: title || 'Untitled task', body_md: body, status: 'inbox' })
+                  body: JSON.stringify({
+                    project_id: projectId,
+                    title: title || 'Untitled task',
+                    body_md: body,
+                    status: 'inbox'
+                  })
                 });
                 const data = await j<{ task: { id: string } }>(res);
                 setLog((p) => [`Created task ${data.task.id}`, ...p]);
@@ -87,7 +96,12 @@ export function ChatPanel() {
                 const res = await fetch(api.tasks, {
                   method: 'POST',
                   headers: { 'content-type': 'application/json' },
-                  body: JSON.stringify({ project_id: projectId, title: title || 'Untitled task', body_md: body, status: 'inbox' })
+                  body: JSON.stringify({
+                    project_id: projectId,
+                    title: title || 'Untitled task',
+                    body_md: body,
+                    status: 'inbox'
+                  })
                 });
                 const data = await j<{ task: { id: string } }>(res);
                 setLog((p) => [`Created task ${data.task.id}`, ...p]);
@@ -109,7 +123,9 @@ export function ChatPanel() {
 
           <div className="rounded-xl border border-matrix-500/20 bg-black/25 p-3">
             <div className="mb-2 text-xs font-medium text-matrix-200/90">Local actions log</div>
-            <pre className="max-h-40 overflow-auto text-xs text-zinc-200">{log.join('\n')}</pre>
+            <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words text-xs text-zinc-200">
+              {log.join('\n')}
+            </pre>
           </div>
         </div>
 
