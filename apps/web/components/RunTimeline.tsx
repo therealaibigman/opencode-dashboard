@@ -109,20 +109,34 @@ async function j<T>(res: Response): Promise<T> {
   return (await res.json()) as T;
 }
 
+const RUN_EVENT_TYPES = [
+  'run.created',
+  'run.started',
+  'run.completed',
+  'run.failed',
+  'run.cancelled',
+  'run.status.changed',
+  'run.needs_approval',
+  'run.step.started',
+  'run.step.progress',
+  'run.step.completed',
+  'run.step.failed',
+  'tool.call.requested',
+  'tool.call.completed',
+  'tool.call.failed',
+  'approval.requested',
+  'approval.resolved',
+  'artifact.created'
+] as const;
+
 export function RunTimeline({ runId }: { runId: string }) {
   const BASE = useBasePath();
   const [events, setEvents] = useState<Ev[]>([]);
   const [status, setStatus] = useState<'connecting' | 'connected' | 'polling' | 'error'>('connecting');
   const [note, setNote] = useState<string | null>(null);
 
-  const streamUrl = useMemo(
-    () => `${BASE}/api/runs/${encodeURIComponent(runId)}/events/stream`,
-    [BASE, runId]
-  );
-  const pollUrl = useMemo(
-    () => `${BASE}/api/runs/${encodeURIComponent(runId)}/events`,
-    [BASE, runId]
-  );
+  const streamUrl = useMemo(() => `${BASE}/api/runs/${encodeURIComponent(runId)}/events/stream`, [BASE, runId]);
+  const pollUrl = useMemo(() => `${BASE}/api/runs/${encodeURIComponent(runId)}/events`, [BASE, runId]);
 
   const stopRef = useRef(false);
 
@@ -165,19 +179,23 @@ export function RunTimeline({ runId }: { runId: string }) {
       pollTimer = setInterval(() => void tick(), 1250);
     };
 
+    const onAny = (ev: MessageEvent) => {
+      try {
+        const e = JSON.parse(ev.data) as Ev;
+        setEvents((prev) => [...prev, e].slice(-800));
+      } catch {
+        // ignore
+      }
+    };
+
     try {
       es = new EventSource(streamUrl);
 
-      const onAny = (ev: MessageEvent) => {
-        try {
-          const e = JSON.parse(ev.data) as Ev;
-          setEvents((prev) => [...prev, e].slice(-800));
-        } catch {
-          // ignore
-        }
-      };
+      // SSE frames are typed (`event: run.started` etc). `onmessage` won't fire.
+      // So we attach listeners for known event types.
+      for (const t of RUN_EVENT_TYPES) es.addEventListener(t, onAny);
+      es.onmessage = onAny; // keep it, just in case
 
-      es.onmessage = onAny;
       es.onopen = () => {
         setStatus('connected');
         setNote(null);
@@ -197,7 +215,10 @@ export function RunTimeline({ runId }: { runId: string }) {
     return () => {
       stopRef.current = true;
       try {
-        es?.close();
+        if (es) {
+          for (const t of RUN_EVENT_TYPES) es.removeEventListener(t, onAny);
+          es.close();
+        }
       } catch {
         // ignore
       }
