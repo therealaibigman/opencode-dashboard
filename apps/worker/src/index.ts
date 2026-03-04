@@ -6,10 +6,16 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { makeDb } from '@ocdash/db/client';
 import { artifacts, events, projects, runs, tasks } from '@ocdash/db/schema';
-import { newId, extractUnifiedDiffFromText, wrapHunkAsFilePatch, policyCheckCommand, policyCheckPath } from '@ocdash/shared';
+import {
+  newId,
+  extractUnifiedDiffFromText,
+  wrapHunkAsFilePatch,
+  policyCheckCommand,
+  policyCheckPath,
+  prepareWorkspaceForProject
+} from '@ocdash/shared';
 import type { OcdashEvent } from '@ocdash/shared';
 import { requireEnv } from './env.js';
-import { prepareWorkspaceForProject } from './workspaces.js';
 import { opencodeRun } from './opencode.js';
 
 const DATABASE_URL = requireEnv('DATABASE_URL');
@@ -226,9 +232,9 @@ async function processRun(db: any, runId: string) {
     root: WORKSPACES_ROOT,
     project: {
       id: projectId,
-      localPath: proj?.localPath,
-      repoUrl: proj?.repoUrl,
-      defaultBranch: proj?.defaultBranch
+      localPath: (proj as any)?.localPath,
+      repoUrl: (proj as any)?.repoUrl,
+      defaultBranch: (proj as any)?.defaultBranch
     }
   });
 
@@ -248,9 +254,9 @@ async function processRun(db: any, runId: string) {
     payload: {
       message: `Workspace ready (${prep.mode}) at ${ws}`,
       workspace_mode: prep.mode,
-      local_path: proj?.localPath ?? null,
-      repo_url: proj?.repoUrl ?? null,
-      default_branch: proj?.defaultBranch ?? null
+      local_path: (proj as any)?.localPath ?? null,
+      repo_url: (proj as any)?.repoUrl ?? null,
+      default_branch: (proj as any)?.defaultBranch ?? null
     }
   });
 
@@ -428,7 +434,6 @@ async function processRun(db: any, runId: string) {
   // Approval gate: try to extract a diff and store it. Only request approval when patch exists.
   const patch = extractUnifiedDiffFromText(result.stdout ?? '');
 
-  // If require-approval is on but the model produced no patch, force needs_approval with reason.
   if (REQUIRE_APPROVAL && !patch) {
     await db.update(runs).set({ status: 'needs_approval' }).where(eq(runs.id, runId));
     await appendEventRow(db, {
@@ -452,7 +457,6 @@ async function processRun(db: any, runId: string) {
         ? wrapHunkAsFilePatch({ patchText: patch.patchText, filePath: 'README.md' })
         : patch.patchText;
 
-    // Empty patch guard
     if (!normalizedPatchText.trim()) {
       if (REQUIRE_APPROVAL) {
         await db.update(runs).set({ status: 'needs_approval' }).where(eq(runs.id, runId));
@@ -512,7 +516,6 @@ async function processRun(db: any, runId: string) {
         return;
       }
 
-      // policy: all touched paths must be inside workspace and not sensitive
       const touchedPaths = patch.touchedPaths.length ? patch.touchedPaths : ['README.md'];
       for (const p of touchedPaths) {
         const dec = policyCheckPath({ workspace: ws, filePath: p });
@@ -538,7 +541,6 @@ async function processRun(db: any, runId: string) {
     }
   }
 
-  // Default outcome: succeed/fail based on opencode exit code.
   if (result.exitCode === 0) {
     await appendEventRow(db, {
       id: newId('evt'),

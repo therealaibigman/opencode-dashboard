@@ -38,6 +38,8 @@ export function AppShell({ title, children }: { title?: string; children: React.
   const [repoUrl, setRepoUrl] = useState('');
   const [defaultBranch, setDefaultBranch] = useState('main');
   const [savingSource, setSavingSource] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [syncNote, setSyncNote] = useState<string | null>(null);
 
   // approval modal state
   const [approval, setApproval] = useState<ApprovalRequested | null>(null);
@@ -52,6 +54,7 @@ export function AppShell({ title, children }: { title?: string; children: React.
     () => ({
       projects: `${BASE}/api/projects`,
       project: (id: string) => `${BASE}/api/projects/${encodeURIComponent(id)}`,
+      projectSync: (id: string) => `${BASE}/api/projects/${encodeURIComponent(id)}/sync`,
       projectEvents: (id: string, afterTs?: string) => {
         const base = `${BASE}/api/projects/${encodeURIComponent(id)}/events/stream`;
         return afterTs ? `${base}?after_ts=${encodeURIComponent(afterTs)}` : base;
@@ -67,6 +70,7 @@ export function AppShell({ title, children }: { title?: string; children: React.
     setLocalPath(String(selected?.localPath ?? ''));
     setRepoUrl(String(selected?.repoUrl ?? ''));
     setDefaultBranch(String(selected?.defaultBranch ?? 'main'));
+    setSyncNote(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedProjectId, projects.length]);
 
@@ -89,10 +93,30 @@ export function AppShell({ title, children }: { title?: string; children: React.
       );
 
       await refreshProjects();
+      setSyncNote('Saved.');
     } catch (e: any) {
       setErr(String(e?.message ?? e));
     } finally {
       setSavingSource(false);
+    }
+  }
+
+  async function syncNow() {
+    if (!selectedProjectId) return;
+
+    setErr(null);
+    setSyncNote(null);
+    setSyncing(true);
+    try {
+      const data = await j<{ ok: boolean; mode?: string; workspace?: string }>(
+        await fetch(api.projectSync(selectedProjectId), { method: 'POST' })
+      );
+
+      setSyncNote(`Synced (${data.mode}) → ${data.workspace}`);
+    } catch (e: any) {
+      setErr(String(e?.message ?? e));
+    } finally {
+      setSyncing(false);
     }
   }
 
@@ -311,16 +335,26 @@ export function AppShell({ title, children }: { title?: string; children: React.
               placeholder="default branch (main)"
               className="w-full rounded-lg border border-matrix-500/20 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:ring-1 focus:ring-matrix-500/40"
             />
-            <button
-              onClick={saveProjectSource}
-              disabled={savingSource || !selectedProjectId}
-              className="w-full rounded-lg bg-matrix-500/15 px-3 py-2 text-sm text-matrix-100 ring-1 ring-matrix-500/40 hover:bg-matrix-500/20 disabled:opacity-60"
-            >
-              {savingSource ? 'Saving…' : 'Save Source'}
-            </button>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                onClick={saveProjectSource}
+                disabled={savingSource || syncing || !selectedProjectId}
+                className="w-full rounded-lg bg-matrix-500/15 px-3 py-2 text-sm text-matrix-100 ring-1 ring-matrix-500/40 hover:bg-matrix-500/20 disabled:opacity-60"
+              >
+                {savingSource ? 'Saving…' : 'Save'}
+              </button>
+              <button
+                onClick={syncNow}
+                disabled={syncing || savingSource || !selectedProjectId}
+                className="w-full rounded-lg bg-black/25 px-3 py-2 text-sm text-zinc-200 ring-1 ring-matrix-500/20 hover:bg-black/35 disabled:opacity-60"
+              >
+                {syncing ? 'Syncing…' : 'Sync now'}
+              </button>
+            </div>
             <div className="text-[11px] text-zinc-500">
               If local path is set, the worker mirrors it into the workspace (excludes node_modules, .git, dist, etc.).
             </div>
+            {syncNote ? <div className="text-[11px] text-matrix-200/90 break-words">{syncNote}</div> : null}
           </div>
         </div>
 
