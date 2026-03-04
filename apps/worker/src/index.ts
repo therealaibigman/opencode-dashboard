@@ -233,6 +233,56 @@ async function createQuickStep({
   return id;
 }
 
+
+type PipelineGraph = {
+  id?: string;
+  nodes?: { id: string; kind?: string }[];
+  edges?: [string, string][];
+};
+
+function pipelineTopoWaves(graph: PipelineGraph): string[][] {
+  const nodes = (graph.nodes ?? []).map((n) => String(n.id));
+  const edges = (graph.edges ?? []).map((e) => [String(e[0]), String(e[1])] as [string, string]);
+
+  const indeg = new Map<string, number>();
+  const out = new Map<string, string[]>();
+  for (const n of nodes) {
+    indeg.set(n, 0);
+    out.set(n, []);
+  }
+  for (const [a, b] of edges) {
+    if (!indeg.has(a) || !indeg.has(b)) continue;
+    out.get(a)!.push(b);
+    indeg.set(b, (indeg.get(b) ?? 0) + 1);
+  }
+
+  const waves: string[][] = [];
+  const q: string[] = [];
+  for (const [n, d] of indeg) if (d === 0) q.push(n);
+
+  const seen = new Set<string>();
+  while (q.length) {
+    const wave = q.splice(0, q.length);
+    waves.push(wave);
+    for (const n of wave) {
+      if (seen.has(n)) continue;
+      seen.add(n);
+      for (const m of out.get(n) ?? []) {
+        indeg.set(m, (indeg.get(m) ?? 0) - 1);
+      }
+    }
+    for (const [n, d] of indeg) {
+      if (d === 0 && !seen.has(n) && !q.includes(n)) q.push(n);
+    }
+  }
+
+  // If graph has cycles or missing links, just return single wave with nodes (best effort).
+  if (seen.size !== nodes.length) {
+    return [nodes];
+  }
+
+  return waves.length ? waves : [nodes];
+}
 async function isRunCancelled(db: any, runId: string): Promise<boolean> {
   const rows = await db.select({ status: runs.status }).from(runs).where(eq(runs.id, runId)).limit(1);
   return rows?.[0]?.status === 'cancelled';
@@ -333,62 +383,53 @@ async function processRun(db: any, runId: string) {
 
   let seq = await getNextSeq(db, runId);
 
-  // GSD pipeline pre-steps (v1): record intake/plan-context steps when a pipeline is selected.
+  let pipelineGraph: any = null;
+  const pipelineStepByKind = new Map<string, string>();
+  const pipelineStepByNode = new Map<string, string>();
+
   if (pipelineId) {
     try {
       const prows = await db.select().from(pipelines).where(eq(pipelines.id, pipelineId)).limit(1);
-      const pname = prows[0]?.name ? String(prows[0].name) : pipelineId;
+      const row = prows[0] as any;
+      pipelineGraph = (row?.graphJson ?? row?.graph_json ?? null) as any;
+
+      const pname = row?.name ? String(row.name) : pipelineId;
       await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: `Pipeline: ${pname}` });
+
+      const nodes: { id: string; kind?: string }[] = Array.isArray(pipelineGraph?.nodes) ? pipelineGraph.nodes : [];
+      const waves = pipelineTopoWaves(pipelineGraph ?? {});
+      const waveIndexByNode = new Map<string, number>();
+      for (let wi = 0; wi < waves.length; wi++) {
+        for (const nid of waves[wi] ?? []) waveIndexByNode.set(String(nid), wi);
+      }
+
+      // Pre-create run_steps rows for each pipeline node (queued).
+      for (const n of nodes) {
+        const nodeId = String((n as any)?.id ?? '').trim();
+        if (!nodeId) continue;
+        const nodeKind = String((n as any)?.kind ?? nodeId).trim() || nodeId;
+        const sid = newId('stp');
+        await db.insert(runSteps).values({
+          id: sid,
+          projectId,
+          runId,
+          name: nodeKind,
+          status: 'queued',
+          model: null,
+          inputJson: { pipeline_node_id: nodeId, pipeline_kind: nodeKind, wave: waveIndexByNode.get(nodeId) ?? 0 },
+          outputJson: {}
+        });
+        pipelineStepByNode.set(nodeId, sid);
+        if (!pipelineStepByKind.has(nodeKind)) pipelineStepByKind.set(nodeKind, sid);
+      }
     } catch {
-      // ignore
+      // ignore pipeline bootstrap failures
     }
-
-    await createQuickStep({ db, projectId, runId, name: 'intake', output: { note: 'recorded' } });
-
-    const planRows = await db
-      .select({ id: artifacts.id })
-      .from(artifacts)
-      .where(and(eq(artifacts.runId, runId), eq(artifacts.kind, 'plan')))
-      .limit(1);
-
-    await createQuickStep({
-      db,
-      projectId,
-      runId,
-      name: 'plan',
-      output: { has_plan_artifact: Boolean(planRows.length) }
-    });
-
-    // Use an explicit run step id for the opencode execution step.
-    stepId = newId('stp');
-    await db.insert(runSteps).values({
-      id: stepId,
-      projectId,
-      runId,
-      name: kind === 'plan' ? 'plan' : 'execute',
-      status: 'running',
-      model: model ?? null,
-      startedAt: new Date(),
-      inputJson: { kind }
-    });
-
-    await appendEventRow(db, {
-      id: newId('evt'),
-      ts: nowIso(),
-      seq: seq++,
-      type: 'run.step.started',
-      source: 'worker',
-      severity: 'info',
-      project_id: projectId,
-      task_id: taskId ?? undefined,
-      thread_id: threadId ?? undefined,
-      run_id: runId,
-      step_id: stepId,
-      payload: { name: kind === 'plan' ? 'plan' : 'execute', model: model ?? null }
-    });
   }
 
-  await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: `Run started (${kind}).` });
+
+  // GSD pipeline execution handled later (after model/step ids are established).
+
 
   await appendEventRow(db, {
     id: newId('evt'),
@@ -496,16 +537,25 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
 
   const stepName = kind === 'plan' ? 'plan' : 'execute';
 
-  await db.insert(runSteps).values({
-    id: stepId,
-    projectId,
-    runId,
-    name: stepName,
-    status: 'running',
-    model: model ?? null,
-    startedAt: new Date(),
-    inputJson: { kind }
-  });
+  // If this run uses a pipeline template, bind the opencode step to the pre-created pipeline node step id.
+  stepId = pipelineStepByKind.get(stepName) ?? stepId;
+
+  const existingStep = await db.select({ id: runSteps.id }).from(runSteps).where(eq(runSteps.id, stepId)).limit(1);
+  if (existingStep.length) {
+    await db.update(runSteps).set({ status: 'running', model: model ?? null, startedAt: new Date(), inputJson: { kind, pipeline: Boolean(pipelineId) } }).where(eq(runSteps.id, stepId));
+  } else {
+    await db.insert(runSteps).values({
+      id: stepId,
+      projectId,
+      runId,
+      name: stepName,
+      status: 'running',
+      model: model ?? null,
+      startedAt: new Date(),
+      inputJson: { kind },
+      outputJson: {}
+    });
+  }
 
   await appendEventRow(db, {
     id: newId('evt'),
