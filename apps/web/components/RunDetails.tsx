@@ -51,6 +51,8 @@ export function RunDetails({ runId }: { runId: string }) {
     () => ({
       run: `${BASE}/api/runs/${encodeURIComponent(runId)}`,
       cancel: `${BASE}/api/runs/${encodeURIComponent(runId)}/cancel`,
+      approve: `${BASE}/api/runs/${encodeURIComponent(runId)}/approve`,
+      reject: `${BASE}/api/runs/${encodeURIComponent(runId)}/reject`,
       artifacts: `${BASE}/api/runs/${encodeURIComponent(runId)}/artifacts`,
       artifact: (id: string) => `${BASE}/api/artifacts/${encodeURIComponent(id)}`
     }),
@@ -63,6 +65,8 @@ export function RunDetails({ runId }: { runId: string }) {
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [cancelling, setCancelling] = useState(false);
+  const [approving, setApproving] = useState(false);
+  const [rejecting, setRejecting] = useState(false);
 
   async function refresh() {
     setErr(null);
@@ -98,6 +102,48 @@ export function RunDetails({ runId }: { runId: string }) {
     }
   }
 
+  async function approveRun() {
+    if (run?.status !== 'needs_approval') return;
+
+    const ok = window.confirm(`Approve and apply changes for run ${runId}?\n\nThis will apply the patch, run checks, and commit automatically.`);
+    if (!ok) return;
+
+    setErr(null);
+    setApproving(true);
+    try {
+      await j(await fetch(api.approve, { method: 'POST' }));
+      await refresh();
+    } catch (e: any) {
+      setErr(String(e?.message ?? e));
+    } finally {
+      setApproving(false);
+    }
+  }
+
+  async function rejectRun() {
+    if (run?.status !== 'needs_approval') return;
+
+    const ok = window.confirm(`Reject changes for run ${runId}?`);
+    if (!ok) return;
+
+    setErr(null);
+    setRejecting(true);
+    try {
+      await j(
+        await fetch(api.reject, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ reason: 'Rejected in UI' })
+        })
+      );
+      await refresh();
+    } catch (e: any) {
+      setErr(String(e?.message ?? e));
+    } finally {
+      setRejecting(false);
+    }
+  }
+
   async function loadArtifact(id: string) {
     const data = await j<{ artifact: ArtifactFull }>(await fetch(api.artifact(id), { cache: 'no-store' }));
     setOpenArtifact(data.artifact);
@@ -129,7 +175,7 @@ export function RunDetails({ runId }: { runId: string }) {
 
           <button
             onClick={() => cancelRun()}
-            disabled={cancelling || !canCancel(run?.status)}
+            disabled={cancelling || !canCancel(run?.status) || approving || rejecting}
             className="rounded-lg bg-red-500/10 px-3 py-2 text-sm text-red-100 ring-1 ring-red-500/30 hover:bg-red-500/15 disabled:opacity-60"
             title={canCancel(run?.status) ? 'Cancel this run' : 'Can only cancel queued/running runs'}
           >
@@ -137,6 +183,31 @@ export function RunDetails({ runId }: { runId: string }) {
           </button>
         </div>
       </div>
+
+      {run?.status === 'needs_approval' ? (
+        <div className="rounded-xl border border-yellow-500/30 bg-yellow-950/20 p-3">
+          <div className="mb-2 text-sm font-medium text-yellow-100">Approval required</div>
+          <div className="mb-3 text-xs text-yellow-100/80">
+            This run generated a patch but policy blocked auto-apply. You can approve to apply the patch, run checks, and commit.
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => approveRun()}
+              disabled={approving || rejecting}
+              className="rounded-lg bg-yellow-500/15 px-3 py-2 text-sm text-yellow-100 ring-1 ring-yellow-500/30 hover:bg-yellow-500/20 disabled:opacity-60"
+            >
+              {approving ? 'Approving…' : 'Approve + Apply + Commit'}
+            </button>
+            <button
+              onClick={() => rejectRun()}
+              disabled={approving || rejecting}
+              className="rounded-lg bg-black/25 px-3 py-2 text-sm text-zinc-200 ring-1 ring-matrix-500/20 hover:bg-black/35 disabled:opacity-60"
+            >
+              {rejecting ? 'Rejecting…' : 'Reject'}
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       {err ? (
         <div className="rounded-xl border border-red-500/30 bg-red-950/30 p-3 text-sm text-red-100">{err}</div>
