@@ -172,10 +172,28 @@ async function processRun(db: any, runId: string) {
     }
   });
 
+  // Cancellation watchdog: poll DB while tool runs.
+  const controller = new AbortController();
+  let cancelled = false;
+  const cancelTimer = setInterval(() => {
+    void (async () => {
+      try {
+        if (!cancelled && (await isRunCancelled(db, runId))) {
+          cancelled = true;
+          controller.abort();
+        }
+      } catch {
+        // ignore
+      }
+    })();
+  }, 1000);
+
   // live progress → run.step.progress (rate-limited)
   let lastProgressAt = 0;
   let tail = '';
   const maybeEmitProgress = async () => {
+    if (cancelled || controller.signal.aborted) return;
+
     const now = Date.now();
     if (now - lastProgressAt < 650) return;
     lastProgressAt = now;
@@ -200,22 +218,6 @@ async function processRun(db: any, runId: string) {
     tail = '';
   };
 
-  // Cancellation watchdog: poll DB while tool runs.
-  const controller = new AbortController();
-  let cancelled = false;
-  const cancelTimer = setInterval(() => {
-    void (async () => {
-      try {
-        if (!cancelled && (await isRunCancelled(db, runId))) {
-          cancelled = true;
-          controller.abort();
-        }
-      } catch {
-        // ignore
-      }
-    })();
-  }, 1000);
-
   const result = await opencodeRun({
     cwd: ws,
     message: msg,
@@ -223,11 +225,13 @@ async function processRun(db: any, runId: string) {
     timeoutMs,
     signal: controller.signal,
     onStdout: (chunk) => {
+      if (cancelled || controller.signal.aborted) return;
       tail += chunk;
       if (tail.length > 2000) tail = tail.slice(-2000);
       void maybeEmitProgress();
     },
     onStderr: (chunk) => {
+      if (cancelled || controller.signal.aborted) return;
       tail += chunk;
       if (tail.length > 2000) tail = tail.slice(-2000);
       void maybeEmitProgress();
@@ -237,8 +241,8 @@ async function processRun(db: any, runId: string) {
   clearInterval(cancelTimer);
   cancelled = cancelled || result.cancelled === true;
 
-  // flush any remaining tail
-  await maybeEmitProgress();
+  // Don't flush progress after cancellation.
+  if (!cancelled) await maybeEmitProgress();
 
   // Store full logs as artifacts
   const stdoutId = await writeArtifact({
@@ -328,7 +332,6 @@ async function processRun(db: any, runId: string) {
       payload: { message: 'Run cancelled' }
     });
 
-    // Do not overwrite status if API already set it.
     await db.update(runs).set({ status: 'cancelled', finishedAt: new Date() }).where(eq(runs.id, runId));
     return;
   }
