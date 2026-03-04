@@ -16,6 +16,7 @@ type RunRow = {
   parentRunId: string | null;
   prUrl: string | null;
   prBranch: string | null;
+  prState: string | null;
   startedAt: string | null;
   finishedAt: string | null;
   createdAt: string;
@@ -251,7 +252,7 @@ export function RunDetails({ runId }: { runId: string }) {
     }
 
     const ok = window.confirm(
-      `Approve and apply changes for run ${runId}?\n\nThis will apply the patch, run checks, commit, and attempt to open a PR.`
+      `Approve and apply changes for run ${runId}?\n\nThis will apply the patch, run checks, commit, and publish (PR for existing repos; direct push for new repos).`
     );
     if (!ok) return;
 
@@ -349,7 +350,7 @@ export function RunDetails({ runId }: { runId: string }) {
       try {
         const data = await j<{ events: any[] }>(await fetch(`${api.events}?limit=200`, { cache: 'no-store' }));
         const failed = (data.events ?? [])
-          .filter((e) => e.type === 'tool.call.failed' && e.payload?.tool === 'github.pr.create')
+          .filter((e) => e.type === 'tool.call.failed' && (e.payload?.tool === 'github.pr.create' || e.payload?.tool === 'github.push.initial'))
           .slice(-1)[0];
         if (!stop) setPrError(failed?.payload?.error ? String(failed.payload.error) : null);
       } catch {
@@ -408,6 +409,8 @@ export function RunDetails({ runId }: { runId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [api.eventsStream]);
 
+  const publishNote = run?.prState === 'pushed' ? `Published via direct push to ${run.prBranch ?? '(base branch)'}` : null;
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -439,7 +442,7 @@ export function RunDetails({ runId }: { runId: string }) {
 
       {prError ? (
         <div className="rounded-xl border border-yellow-500/25 bg-yellow-950/20 p-3 text-sm text-yellow-50">
-          GitHub PR creation failed: <span className="text-yellow-100/80">{prError}</span>
+          Publish failed: <span className="text-yellow-100/80">{prError}</span>
         </div>
       ) : null}
 
@@ -451,6 +454,8 @@ export function RunDetails({ runId }: { runId: string }) {
           </a>
           {run.prBranch ? <span className="text-[11px] text-zinc-500">({run.prBranch})</span> : null}
         </div>
+      ) : publishNote ? (
+        <div className="rounded-xl border border-matrix-500/20 bg-black/20 p-3 text-sm text-zinc-200">{publishNote}</div>
       ) : null}
 
       {run?.kind === 'plan' ? (
@@ -471,7 +476,7 @@ export function RunDetails({ runId }: { runId: string }) {
           <div className="mb-3 text-xs text-yellow-100/80">
             {run.kind === 'plan'
               ? 'This run produced a plan. Approve to queue an execute run.'
-              : 'This run generated a patch but policy blocked auto-apply. You can approve to apply the patch, run checks, commit, and open a PR.'}
+              : 'This run generated a patch but policy blocked auto-apply. You can approve to apply the patch, run checks, commit, and publish (PR for existing repos; direct push for new repos).'}
           </div>
           <div className="flex flex-wrap gap-2">
             <button
@@ -479,7 +484,7 @@ export function RunDetails({ runId }: { runId: string }) {
               disabled={approving || rejecting}
               className="rounded-lg bg-yellow-500/15 px-3 py-2 text-sm text-yellow-100 ring-1 ring-yellow-500/30 hover:bg-yellow-500/20 disabled:opacity-60"
             >
-              {approving ? 'Approving…' : run.kind === 'plan' ? 'Approve plan → Execute' : 'Approve + Apply + Commit + PR'}
+              {approving ? 'Approving…' : run.kind === 'plan' ? 'Approve plan → Execute' : 'Approve + Apply + Commit + Publish'}
             </button>
             <button
               onClick={() => reject()}

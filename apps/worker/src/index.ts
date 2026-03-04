@@ -14,7 +14,7 @@ import { extractUnifiedDiffFromText, wrapHunkAsFilePatch } from '@ocdash/shared/
 import { policyCheckCommand, policyCheckPath } from '@ocdash/shared/policy';
 import { prepareWorkspaceForProject } from '@ocdash/shared/workspaces';
 import { validatePlanJson } from '@ocdash/shared/plan';
-import { createGithubPr } from '@ocdash/shared/github';
+import { ensurePushedOrPr } from '@ocdash/shared/github';
 
 import { requireEnv } from './env.js';
 import { opencodeRun } from './opencode.js';
@@ -745,24 +745,56 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
 
       const prTitle = `ocdash: ${taskTitle || taskId || runId}`;
       const prBody = `Automated changes from OpenCode Dashboard.\n\nRun: ${runId}\nProject: ${projectId}\nTask: ${taskId ?? '(none)'}\n`;
-      const prRes = await createGithubPr({ ws, runId, baseBranch, title: prTitle, body: prBody });
+      const prRes = await ensurePushedOrPr({ ws, runId, baseBranch, title: prTitle, body: prBody });
 
       if (prRes.ok) {
-        await db.update(runs).set({ prUrl: prRes.url, prBranch: prRes.branch, prNumber: prRes.number ?? null, prRepo: prRes.repo ?? null, prState: prRes.state ?? null }).where(eq(runs.id, runId));
-        const prArtId = await writeArtifact({ db, projectId, runId, stepId, kind: 'github_pr', name: 'GitHub PR', content: prRes.url + '\n' });
-        await appendEventRow(db, {
-          id: newId('evt'),
-          ts: nowIso(),
-          seq: seq++,
-          type: 'tool.call.completed',
-          source: 'worker',
-          severity: 'info',
-          project_id: projectId,
-          task_id: taskId ?? undefined,
-          run_id: runId,
-          step_id: stepId,
-          payload: { tool: 'github.pr.create', url: prRes.url, branch: prRes.branch, number: prRes.number ?? null, repo: prRes.repo ?? null, state: prRes.state ?? null, artifact_id: prArtId }
-        });
+        if (prRes.mode === 'pr') {
+          await db.update(runs)
+            .set({ prUrl: prRes.url, prBranch: prRes.branch, prNumber: prRes.number ?? null, prRepo: prRes.repo ?? null, prState: prRes.state ?? null })
+            .where(eq(runs.id, runId));
+
+          const prArtId = await writeArtifact({
+            db,
+            projectId,
+            runId,
+            stepId,
+            kind: 'github_pr',
+            name: 'GitHub PR',
+            content: prRes.url + '\n'
+          });
+
+          await appendEventRow(db, {
+            id: newId('evt'),
+            ts: nowIso(),
+            seq: seq++,
+            type: 'tool.call.completed',
+            source: 'worker',
+            severity: 'info',
+            project_id: projectId,
+            task_id: taskId ?? undefined,
+            run_id: runId,
+            step_id: stepId,
+            payload: { tool: 'github.pr.create', url: prRes.url, branch: prRes.branch, number: prRes.number ?? null, repo: prRes.repo ?? null, state: prRes.state ?? null, artifact_id: prArtId }
+          });
+        } else {
+          await db.update(runs)
+            .set({ prUrl: null, prBranch: prRes.branch, prNumber: null, prRepo: null, prState: 'pushed' })
+            .where(eq(runs.id, runId));
+
+          await appendEventRow(db, {
+            id: newId('evt'),
+            ts: nowIso(),
+            seq: seq++,
+            type: 'tool.call.completed',
+            source: 'worker',
+            severity: 'info',
+            project_id: projectId,
+            task_id: taskId ?? undefined,
+            run_id: runId,
+            step_id: stepId,
+            payload: { tool: 'github.push.initial', branch: prRes.branch }
+          });
+        }
       } else {
         const prErrId = await writeArtifact({ db, projectId, runId, stepId, kind: 'stderr', name: 'github pr create failed', content: String(prRes.error) });
         await appendEventRow(db, {
