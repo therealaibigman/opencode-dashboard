@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { validatePlanJson } from '@ocdash/shared';
 import { useBasePath } from './useBasePath';
 import { RunTimeline } from './RunTimeline';
 
@@ -28,13 +29,6 @@ type ArtifactStub = {
 };
 
 type ArtifactFull = ArtifactStub & { content_text: string };
-
-type PlanJson = {
-  summary?: string;
-  steps?: { title?: string; details?: string; risk?: 'low' | 'med' | 'high' }[];
-  files?: string[];
-  commands?: string[];
-};
 
 async function j<T>(res: Response): Promise<T> {
   if (!res.ok) throw new Error(await res.text());
@@ -68,30 +62,23 @@ function RiskTag({ risk }: { risk: string }) {
 }
 
 function PlanViewer({ planText }: { planText: string }) {
-  let plan: PlanJson | null = null;
-  let parseErr: string | null = null;
+  const v = validatePlanJson(planText);
 
-  try {
-    plan = JSON.parse(planText) as PlanJson;
-  } catch (e: any) {
-    parseErr = String(e?.message ?? e);
-  }
-
-  if (!plan) {
+  if (!v.ok) {
     return (
       <div>
         <div className="mb-2 text-xs text-zinc-400">Plan JSON (raw)</div>
-        {parseErr ? (
-          <div className="mb-2 rounded-lg border border-red-500/30 bg-red-950/30 p-2 text-xs text-red-100">
-            JSON parse failed: {parseErr}
-          </div>
-        ) : null}
+        <div className="mb-2 rounded-lg border border-red-500/30 bg-red-950/30 p-2 text-xs text-red-100">
+          Invalid plan format: {v.error}
+        </div>
         <pre className="max-h-[360px] overflow-auto whitespace-pre-wrap break-words text-[11px] text-zinc-200">
           {planText}
         </pre>
       </div>
     );
   }
+
+  const plan = v.plan;
 
   return (
     <div className="space-y-4">
