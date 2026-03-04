@@ -940,6 +940,361 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
         }
 
 
+      }
+
+      // Pipeline DAG execution (v1): split execute/checks/publish/summary into discrete nodes.
+      if (pipelineId && pipelineGraph) {
+        // 1) apply patch as part of execute node (workspace write)
+        await appendEventRow(db, {
+          id: newId('evt'),
+          ts: nowIso(),
+          seq: seq++,
+          type: 'run.step.progress',
+          source: 'worker',
+          severity: 'info',
+          project_id: projectId,
+          task_id: taskId ?? undefined,
+          run_id: runId,
+          step_id: stepId,
+          payload: { message: 'Pipeline: applying patch (execute node)' }
+        });
+
+        const patchFile = path.join(ws, `.ocdash_pipe_${Date.now()}.diff`);
+        await fs.writeFile(patchFile, normalizedPatchText, 'utf8');
+
+        let applyRes = await runCmd({ cwd: ws, cmd: `git apply ${patchFile}` });
+        let method = 'git apply';
+        if (applyRes.exitCode !== 0) {
+          const p2 = await runCmd({ cwd: ws, cmd: `patch -p1 --forward --batch -i ${patchFile}` });
+          method = 'patch -p1';
+          applyRes = {
+            exitCode: p2.exitCode,
+            stdout: `${applyRes.stdout}\n---\n[fallback patch stdout]\n${p2.stdout}`,
+            stderr: `${applyRes.stderr}\n---\n[fallback patch stderr]\n${p2.stderr}`
+          };
+        }
+
+        const applyOutId = await writeArtifact({ db, projectId, runId, stepId, kind: 'stdout', name: `apply patch stdout (${method})`, content: applyRes.stdout });
+        const applyErrId = await writeArtifact({ db, projectId, runId, stepId, kind: 'stderr', name: `apply patch stderr (${method})`, content: applyRes.stderr });
+
+        if (applyRes.exitCode !== 0) {
+          await db.update(runSteps).set({ status: 'failed', finishedAt: new Date(), outputJson: { stage: 'apply', method, exitCode: applyRes.exitCode } }).where(eq(runSteps.id, stepId));
+          await db.update(runs).set({ status: 'failed', finishedAt: new Date() }).where(eq(runs.id, runId));
+          await appendEventRow(db, {
+            id: newId('evt'),
+            ts: nowIso(),
+            seq: seq++,
+            type: 'run.step.failed',
+            source: 'worker',
+            severity: 'error',
+            project_id: projectId,
+            task_id: taskId ?? undefined,
+            run_id: runId,
+            step_id: stepId,
+            payload: { message: 'Pipeline: patch apply failed', stdout_artifact_id: applyOutId, stderr_artifact_id: applyErrId }
+          });
+          return;
+        }
+
+        await db.update(runSteps).set({ status: 'succeeded', finishedAt: new Date(), outputJson: { stage: 'apply', method, exitCode: 0 } }).where(eq(runSteps.id, stepId));
+        await appendEventRow(db, {
+          id: newId('evt'),
+          ts: nowIso(),
+          seq: seq++,
+          type: 'run.step.completed',
+          source: 'worker',
+          severity: 'info',
+          project_id: projectId,
+          task_id: taskId ?? undefined,
+          thread_id: threadId ?? undefined,
+          run_id: runId,
+          step_id: stepId,
+          payload: { name: 'execute' }
+        });
+
+        const autoCmdsRaw = String(process.env.OC_DASH_AUTO_COMMANDS ?? '').trim();
+        const cmds = autoCmdsRaw
+          ? autoCmdsRaw.split(',').map((x) => x.trim()).filter(Boolean)
+          : ['npm test', 'npm run lint', 'npm run typecheck'];
+
+        // 2) checks node (no workspace writes by us; allow parallel commands internally)
+        const checksStepId = pipelineStepByKind.get('checks') ?? newId('stp');
+        const checksExisting = await db.select({ id: runSteps.id }).from(runSteps).where(eq(runSteps.id, checksStepId)).limit(1);
+        if (checksExisting.length) {
+          await db.update(runSteps).set({ status: 'running', startedAt: new Date(), inputJson: { cmds } }).where(eq(runSteps.id, checksStepId));
+        } else {
+          await db.insert(runSteps).values({ id: checksStepId, projectId, runId, name: 'checks', status: 'running', startedAt: new Date(), inputJson: { cmds }, outputJson: {} });
+        }
+        await appendEventRow(db, {
+          id: newId('evt'),
+          ts: nowIso(),
+          seq: seq++,
+          type: 'run.step.started',
+          source: 'worker',
+          severity: 'info',
+          project_id: projectId,
+          task_id: taskId ?? undefined,
+          thread_id: threadId ?? undefined,
+          run_id: runId,
+          step_id: checksStepId,
+          payload: { name: 'checks' }
+        });
+
+        const hasPkg = await fileExists(path.join(ws, 'package.json'));
+        if (!hasPkg) {
+          await appendEventRow(db, {
+            id: newId('evt'),
+            ts: nowIso(),
+            seq: seq++,
+            type: 'run.step.progress',
+            source: 'worker',
+            severity: 'info',
+            project_id: projectId,
+            task_id: taskId ?? undefined,
+            run_id: runId,
+            step_id: checksStepId,
+            payload: { message: 'No package.json; skipping checks.' }
+          });
+        } else {
+          const limit = 2;
+          let cidx = 0;
+          let failed: { cmd: string; outId: string; errId: string; exitCode: number } | null = null;
+          const runOne = async () => {
+            while (true) {
+              const i = cidx++;
+              const cmd = cmds[i];
+              if (!cmd) return;
+              if (failed) return;
+              const res = await runCmd({ cwd: ws, cmd });
+              const outId = await writeArtifact({ db, projectId, runId, stepId: checksStepId, kind: 'stdout', name: `${cmd} stdout`, content: res.stdout });
+              const errId = await writeArtifact({ db, projectId, runId, stepId: checksStepId, kind: 'stderr', name: `${cmd} stderr`, content: res.stderr });
+              if (res.exitCode !== 0 && !failed) {
+                failed = { cmd, outId, errId, exitCode: res.exitCode };
+                return;
+              }
+            }
+          };
+          const workers = Array.from({ length: Math.max(1, Math.min(limit, cmds.length)) }, () => runOne());
+          await Promise.all(workers);
+          const f = failed as unknown as { cmd: string; outId: string; errId: string; exitCode: number } | null;
+          if (f) {
+            await db.update(runSteps).set({ status: 'failed', finishedAt: new Date(), outputJson: { cmd: f.cmd, exitCode: f.exitCode } }).where(eq(runSteps.id, checksStepId));
+            await appendEventRow(db, {
+              id: newId('evt'),
+              ts: nowIso(),
+              seq: seq++,
+              type: 'run.step.failed',
+              source: 'worker',
+              severity: 'error',
+              project_id: projectId,
+              task_id: taskId ?? undefined,
+              run_id: runId,
+              step_id: checksStepId,
+              payload: { message: `checks failed: ${f.cmd}`, stdout_artifact_id: f.outId, stderr_artifact_id: f.errId }
+            });
+            await db.update(runs).set({ status: 'failed', finishedAt: new Date() }).where(eq(runs.id, runId));
+            return;
+          }
+        }
+
+        await db.update(runSteps).set({ status: 'succeeded', finishedAt: new Date(), outputJson: { ok: true } }).where(eq(runSteps.id, checksStepId));
+        await appendEventRow(db, {
+          id: newId('evt'),
+          ts: nowIso(),
+          seq: seq++,
+          type: 'run.step.completed',
+          source: 'worker',
+          severity: 'info',
+          project_id: projectId,
+          task_id: taskId ?? undefined,
+          thread_id: threadId ?? undefined,
+          run_id: runId,
+          step_id: checksStepId,
+          payload: { name: 'checks' }
+        });
+
+        // 3) publish node (workspace write)
+        const publishStepId = pipelineStepByKind.get('publish') ?? newId('stp');
+        const pubExisting = await db.select({ id: runSteps.id }).from(runSteps).where(eq(runSteps.id, publishStepId)).limit(1);
+        if (pubExisting.length) {
+          await db.update(runSteps).set({ status: 'running', startedAt: new Date(), inputJson: { baseBranch } }).where(eq(runSteps.id, publishStepId));
+        } else {
+          await db.insert(runSteps).values({ id: publishStepId, projectId, runId, name: 'publish', status: 'running', startedAt: new Date(), inputJson: { baseBranch }, outputJson: {} });
+        }
+        await appendEventRow(db, {
+          id: newId('evt'),
+          ts: nowIso(),
+          seq: seq++,
+          type: 'run.step.started',
+          source: 'worker',
+          severity: 'info',
+          project_id: projectId,
+          task_id: taskId ?? undefined,
+          thread_id: threadId ?? undefined,
+          run_id: runId,
+          step_id: publishStepId,
+          payload: { name: 'publish' }
+        });
+
+        await runCmd({ cwd: ws, cmd: 'git add -A' });
+        const commitMsg = `ocdash: auto-apply for ${taskId ?? runId}`;
+        const commitRes = await runCmd({ cwd: ws, cmd: `git commit -m "${commitMsg.replace(/"/g, "'")}"` });
+        const cOut = await writeArtifact({ db, projectId, runId, stepId: publishStepId, kind: 'stdout', name: 'git commit stdout', content: commitRes.stdout });
+        const cErr = await writeArtifact({ db, projectId, runId, stepId: publishStepId, kind: 'stderr', name: 'git commit stderr', content: commitRes.stderr });
+        if (commitRes.exitCode !== 0) {
+          await db.update(runSteps).set({ status: 'failed', finishedAt: new Date(), outputJson: { stage: 'commit', exitCode: commitRes.exitCode } }).where(eq(runSteps.id, publishStepId));
+          await appendEventRow(db, {
+            id: newId('evt'),
+            ts: nowIso(),
+            seq: seq++,
+            type: 'run.step.failed',
+            source: 'worker',
+            severity: 'error',
+            project_id: projectId,
+            task_id: taskId ?? undefined,
+            run_id: runId,
+            step_id: publishStepId,
+            payload: { message: 'git commit failed', stdout_artifact_id: cOut, stderr_artifact_id: cErr }
+          });
+          await db.update(runs).set({ status: 'failed', finishedAt: new Date() }).where(eq(runs.id, runId));
+          return;
+        }
+
+        const prTitle = `ocdash: ${taskTitle || taskId || runId}`;
+        const prBody = `Automated changes from OpenCode Dashboard.\n\nRun: ${runId}\nProject: ${projectId}\nTask: ${taskId ?? '(none)'}\n`;
+        const prRes = await ensurePushedOrPr({ ws, runId, baseBranch, title: prTitle, body: prBody });
+
+        if (prRes.ok) {
+          if (prRes.mode === 'pr') {
+            await db.update(runs)
+              .set({ prUrl: prRes.url, prBranch: prRes.branch, prNumber: prRes.number ?? null, prRepo: prRes.repo ?? null, prState: prRes.state ?? null })
+              .where(eq(runs.id, runId));
+            const prArtId = await writeArtifact({ db, projectId, runId, stepId: publishStepId, kind: 'github_pr', name: 'GitHub PR', content: prRes.url + '\n' });
+            await appendEventRow(db, {
+              id: newId('evt'),
+              ts: nowIso(),
+              seq: seq++,
+              type: 'tool.call.completed',
+              source: 'worker',
+              severity: 'info',
+              project_id: projectId,
+              task_id: taskId ?? undefined,
+              run_id: runId,
+              step_id: publishStepId,
+              payload: { tool: 'github.pr.create', url: prRes.url, branch: prRes.branch, number: prRes.number ?? null, repo: prRes.repo ?? null, state: prRes.state ?? null, artifact_id: prArtId }
+            });
+            await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: `Published: PR ${(prRes as any).url}` });
+          } else {
+            await db.update(runs).set({ prUrl: null, prBranch: prRes.branch, prNumber: null, prRepo: null, prState: 'pushed' }).where(eq(runs.id, runId));
+            await appendEventRow(db, {
+              id: newId('evt'),
+              ts: nowIso(),
+              seq: seq++,
+              type: 'tool.call.completed',
+              source: 'worker',
+              severity: 'info',
+              project_id: projectId,
+              task_id: taskId ?? undefined,
+              run_id: runId,
+              step_id: publishStepId,
+              payload: { tool: 'github.push.initial', branch: prRes.branch }
+            });
+            await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: `Published: pushed to ${prRes.branch}` });
+          }
+        } else {
+          const prErrId = await writeArtifact({ db, projectId, runId, stepId: publishStepId, kind: 'stderr', name: 'github pr create failed', content: String(prRes.error) });
+          await appendEventRow(db, {
+            id: newId('evt'),
+            ts: nowIso(),
+            seq: seq++,
+            type: 'tool.call.failed',
+            source: 'worker',
+            severity: 'warn',
+            project_id: projectId,
+            task_id: taskId ?? undefined,
+            run_id: runId,
+            step_id: publishStepId,
+            payload: { tool: 'github.pr.create', error: prRes.error, stderr_artifact_id: prErrId }
+          });
+        }
+
+        await db.update(runSteps).set({ status: 'succeeded', finishedAt: new Date(), outputJson: { ok: true } }).where(eq(runSteps.id, publishStepId));
+        await appendEventRow(db, {
+          id: newId('evt'),
+          ts: nowIso(),
+          seq: seq++,
+          type: 'run.step.completed',
+          source: 'worker',
+          severity: 'info',
+          project_id: projectId,
+          task_id: taskId ?? undefined,
+          thread_id: threadId ?? undefined,
+          run_id: runId,
+          step_id: publishStepId,
+          payload: { name: 'publish' }
+        });
+
+        // 4) summary node
+        const summaryStepId = pipelineStepByKind.get('summary') ?? newId('stp');
+        const sumExisting = await db.select({ id: runSteps.id }).from(runSteps).where(eq(runSteps.id, summaryStepId)).limit(1);
+        if (sumExisting.length) {
+          await db.update(runSteps).set({ status: 'running', startedAt: new Date(), inputJson: {} }).where(eq(runSteps.id, summaryStepId));
+        } else {
+          await db.insert(runSteps).values({ id: summaryStepId, projectId, runId, name: 'summary', status: 'running', startedAt: new Date(), inputJson: {}, outputJson: {} });
+        }
+
+        const prRow = await db.select({ prUrl: runs.prUrl }).from(runs).where(eq(runs.id, runId)).limit(1);
+        const summary = `Run completed (pipeline). ${prRow?.[0]?.prUrl ? 'PR: ' + String(prRow[0].prUrl) : ''}`.trim();
+        await writeArtifact({ db, projectId, runId, stepId: summaryStepId, kind: 'summary', name: 'summary', content: summary + '\n' });
+        await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: summary });
+
+        await db.update(runSteps).set({ status: 'succeeded', finishedAt: new Date(), outputJson: { ok: true } }).where(eq(runSteps.id, summaryStepId));
+        await appendEventRow(db, {
+          id: newId('evt'),
+          ts: nowIso(),
+          seq: seq++,
+          type: 'run.step.completed',
+          source: 'worker',
+          severity: 'info',
+          project_id: projectId,
+          task_id: taskId ?? undefined,
+          thread_id: threadId ?? undefined,
+          run_id: runId,
+          step_id: summaryStepId,
+          payload: { name: 'summary' }
+        });
+
+        await db.update(runs).set({ status: 'succeeded', finishedAt: new Date() }).where(eq(runs.id, runId));
+        await appendEventRow(db, {
+          id: newId('evt'),
+          ts: nowIso(),
+          seq: seq++,
+          type: 'run.completed',
+          source: 'worker',
+          severity: 'info',
+          project_id: projectId,
+          task_id: taskId ?? undefined,
+          run_id: runId,
+          payload: { message: 'Run completed (pipeline)' }
+        });
+
+        // Task lifecycle projection: after success
+        if (kind === 'execute') {
+          const pr = await db
+            .select({ prUrl: runs.prUrl, prState: runs.prState })
+            .from(runs)
+            .where(eq(runs.id, runId))
+            .limit(1);
+          const prUrl = pr?.[0]?.prUrl ? String(pr[0].prUrl) : '';
+          const prState = pr?.[0]?.prState ? String(pr[0].prState) : '';
+          const next = prUrl ? 'review' : prState === 'pushed' ? 'done' : 'review';
+          await maybeUpdateTaskStatus({ db, projectId, taskId, runId, nextStatus: next });
+        }
+
+        return;
+      }
+
+
       // AUTO_APPLY_START
       // Auto-apply path (policy allowed, no approval required).
       await appendEventRow(db, {
@@ -1226,7 +1581,6 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
 
       return;
       // AUTO_APPLY_END
-      }
     }
   }
 
