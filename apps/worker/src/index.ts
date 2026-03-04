@@ -287,6 +287,20 @@ async function fileExists(p: string) {
   }
 }
 
+async function runLimited<T>(items: T[], limit: number, fn: (item: T) => Promise<void>) {
+  const q = [...items];
+  const workers: Promise<void>[] = [];
+  const runOne = async () => {
+    for (;;) {
+      const item = q.shift();
+      if (!item) return;
+      await fn(item);
+    }
+  };
+  for (let i = 0; i < Math.max(1, limit); i++) workers.push(runOne());
+  await Promise.all(workers);
+}
+
 async function ensureGitRepo(ws: string) {
   const gitDir = path.join(ws, '.git');
   if (!(await fileExists(gitDir))) {
@@ -1009,27 +1023,53 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
           payload: { message: 'No package.json; skipping checks.' }
         });
       } else {
-        for (const cmd of cmds) {
+        // Run checks as a wave (limited parallelism).
+        const failures: { cmd: string; outId: string; errId: string }[] = [];
+
+        await runLimited(cmds, 2, async (cmd) => {
           const res = await runCmd({ cwd: ws, cmd });
-          const outId = await writeArtifact({ db, projectId, runId, stepId, kind: 'stdout', name: `${cmd} stdout`, content: res.stdout });
-          const errId = await writeArtifact({ db, projectId, runId, stepId, kind: 'stderr', name: `${cmd} stderr`, content: res.stderr });
+          const outId = await writeArtifact({
+            db,
+            projectId,
+            runId,
+            stepId,
+            kind: 'stdout',
+            name: `${cmd} stdout`,
+            content: res.stdout
+          });
+          const errId = await writeArtifact({
+            db,
+            projectId,
+            runId,
+            stepId,
+            kind: 'stderr',
+            name: `${cmd} stderr`,
+            content: res.stderr
+          });
+
           if (res.exitCode !== 0) {
-            await db.update(runs).set({ status: 'failed', finishedAt: new Date() }).where(eq(runs.id, runId));
-            await appendEventRow(db, {
-              id: newId('evt'),
-              ts: nowIso(),
-              seq: seq++,
-              type: 'run.step.failed',
-              source: 'worker',
-              severity: 'error',
-              project_id: projectId,
-              task_id: taskId ?? undefined,
-              run_id: runId,
-              step_id: stepId,
-              payload: { message: `${cmd} failed`, stdout_artifact_id: outId, stderr_artifact_id: errId }
-            });
-            return;
+            failures.push({ cmd, outId, errId });
           }
+        });
+
+        if (failures.length) {
+          const f = failures[0]!;
+          await db.update(runs).set({ status: 'failed', finishedAt: new Date() }).where(eq(runs.id, runId));
+          await appendEventRow(db, {
+            id: newId('evt'),
+            ts: nowIso(),
+            seq: seq++,
+            type: 'run.step.failed',
+            source: 'worker',
+            severity: 'error',
+            project_id: projectId,
+            task_id: taskId ?? undefined,
+            run_id: runId,
+            step_id: stepId,
+            payload: { message: `checks failed: ${f.cmd}`, stdout_artifact_id: f.outId, stderr_artifact_id: f.errId }
+          });
+          return;
+        }
         }
       }
 
