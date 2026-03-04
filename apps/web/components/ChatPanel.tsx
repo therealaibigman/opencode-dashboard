@@ -52,7 +52,11 @@ export function ChatPanel() {
     const res = await fetch(api.threads, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ project_id: projectId, task_id: taskId ?? null, title: taskId ? 'Task thread' : 'Project thread' })
+      body: JSON.stringify({
+        project_id: projectId,
+        task_id: taskId ?? null,
+        title: taskId ? 'Task thread' : 'Project thread'
+      })
     });
     const data = await j<{ thread: { id: string } }>(res);
     return data.thread.id;
@@ -187,7 +191,7 @@ export function ChatPanel() {
 
         <div className="rounded-xl border border-matrix-500/20 bg-black/20 p-3">
           <div className="mb-2 text-xs font-medium text-matrix-200/90">Live events</div>
-          <EventFeed />
+          <EventFeed max={100} />
         </div>
       </div>
     </div>
