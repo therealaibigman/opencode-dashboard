@@ -12,7 +12,8 @@ import { opencodeRun } from './opencode.js';
 const DATABASE_URL = requireEnv('DATABASE_URL');
 const POLL_MS = Number(process.env.WORKER_POLL_INTERVAL_MS ?? '750');
 
-const WORKSPACES_ROOT = process.env.PROJECT_WORKSPACES_ROOT ?? '/home/exedev/.openclaw/workspace/opencode-workspaces';
+const WORKSPACES_ROOT =
+  process.env.PROJECT_WORKSPACES_ROOT ?? '/home/exedev/.openclaw/workspace/opencode-workspaces';
 
 function nowIso() {
   return new Date().toISOString();
@@ -138,6 +139,9 @@ async function processRun(db: any, runId: string) {
     ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}\n\nDo the next best action. If code changes are needed, explain what you would change.`
     : `Project ${projectId}: Do the next best action.`;
 
+  const model = (process.env.OPENCODE_MODEL ?? '').trim() || undefined;
+  const timeoutMs = Number(process.env.OPENCODE_TIMEOUT_MS ?? '600000');
+
   await appendEventRow(db, {
     id: newId('evt'),
     ts: nowIso(),
@@ -149,10 +153,64 @@ async function processRun(db: any, runId: string) {
     task_id: taskId ?? undefined,
     run_id: runId,
     step_id: stepId,
-    payload: { tool: 'opencode.run', args: { cwd: ws, message: taskId ? taskTitle : '(no task)' } }
+    payload: {
+      tool: 'opencode.run',
+      args: {
+        cwd: ws,
+        message: taskId ? taskTitle : '(no task)',
+        model: model ?? null,
+        timeout_ms: timeoutMs
+      }
+    }
   });
 
-  const result = await opencodeRun({ cwd: ws, message: msg });
+  // live progress → run.step.progress (rate-limited)
+  let lastProgressAt = 0;
+  let tail = '';
+  const maybeEmitProgress = async () => {
+    const now = Date.now();
+    if (now - lastProgressAt < 650) return;
+    lastProgressAt = now;
+
+    const text = tail.trim();
+    if (!text) return;
+
+    await appendEventRow(db, {
+      id: newId('evt'),
+      ts: nowIso(),
+      seq: seq++,
+      type: 'run.step.progress',
+      source: 'worker',
+      severity: 'info',
+      project_id: projectId,
+      task_id: taskId ?? undefined,
+      run_id: runId,
+      step_id: stepId,
+      payload: { message: clipPreview(text, 900) }
+    });
+
+    tail = '';
+  };
+
+  const result = await opencodeRun({
+    cwd: ws,
+    message: msg,
+    model,
+    timeoutMs,
+    onStdout: (chunk) => {
+      tail += chunk;
+      if (tail.length > 2000) tail = tail.slice(-2000);
+      void maybeEmitProgress();
+    },
+    onStderr: (chunk) => {
+      tail += chunk;
+      if (tail.length > 2000) tail = tail.slice(-2000);
+      void maybeEmitProgress();
+    }
+  });
+
+  // flush any remaining tail
+  await maybeEmitProgress();
 
   // Store full logs as artifacts
   const stdoutId = await writeArtifact({
@@ -255,10 +313,7 @@ async function processRun(db: any, runId: string) {
       payload: { message: 'Run completed (opencode)' }
     });
 
-    await db
-      .update(runs)
-      .set({ status: 'succeeded', finishedAt: new Date() })
-      .where(eq(runs.id, runId));
+    await db.update(runs).set({ status: 'succeeded', finishedAt: new Date() }).where(eq(runs.id, runId));
   } else {
     await appendEventRow(db, {
       id: newId('evt'),
@@ -319,11 +374,7 @@ async function main() {
 
   // eslint-disable-next-line no-constant-condition
   while (true) {
-    const queued = await db
-      .select({ id: runs.id })
-      .from(runs)
-      .where(eq(runs.status, 'queued'))
-      .limit(1);
+    const queued = await db.select({ id: runs.id }).from(runs).where(eq(runs.status, 'queued')).limit(1);
 
     if (queued.length) {
       const runId = queued[0]!.id;

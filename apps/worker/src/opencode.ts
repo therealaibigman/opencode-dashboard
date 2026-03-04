@@ -9,14 +9,41 @@ export type OpenCodeRunResult = {
 export async function opencodeRun({
   cwd,
   message,
-  timeoutMs = 10 * 60 * 1000
+  timeoutMs = 10 * 60 * 1000,
+  model,
+  onStdout,
+  onStderr
 }: {
   cwd: string;
   message: string;
   timeoutMs?: number;
+  model?: string;
+  onStdout?: (chunk: string) => void;
+  onStderr?: (chunk: string) => void;
 }): Promise<OpenCodeRunResult> {
+  const stub = String(process.env.OPENCODE_STUB ?? '') === '1';
+  if (stub) {
+    const fake = [
+      '[stub] opencode not configured; simulating a run',
+      `[stub] cwd=${cwd}`,
+      `[stub] model=${model ?? process.env.OPENCODE_MODEL ?? '(none)'}`,
+      '[stub] doing work…',
+      '[stub] done'
+    ].join('\n');
+
+    onStdout?.(fake + '\n');
+    await new Promise((r) => setTimeout(r, 350));
+
+    return { exitCode: 0, stdout: fake + '\n', stderr: '' };
+  }
+
   return await new Promise((resolve) => {
-    const child = spawn('opencode', ['run', message, '--print-logs', '--log-level', 'INFO'], {
+    const m = (model ?? process.env.OPENCODE_MODEL ?? '').trim();
+
+    const args = ['run', message, '--print-logs', '--log-level', 'INFO'];
+    if (m) args.push('--model', m);
+
+    const child = spawn('opencode', args, {
       cwd,
       env: process.env,
       stdio: ['ignore', 'pipe', 'pipe']
@@ -26,12 +53,23 @@ export async function opencodeRun({
     let stderr = '';
 
     const t = setTimeout(() => {
-      stderr += `\n[worker] timeout after ${timeoutMs}ms`;
+      const msg = `\n[worker] timeout after ${timeoutMs}ms`;
+      stderr += msg;
+      onStderr?.(msg);
       child.kill('SIGKILL');
     }, timeoutMs);
 
-    child.stdout.on('data', (d) => (stdout += d.toString()));
-    child.stderr.on('data', (d) => (stderr += d.toString()));
+    child.stdout.on('data', (d) => {
+      const s = d.toString();
+      stdout += s;
+      onStdout?.(s);
+    });
+
+    child.stderr.on('data', (d) => {
+      const s = d.toString();
+      stderr += s;
+      onStderr?.(s);
+    });
 
     child.on('close', (code) => {
       clearTimeout(t);
