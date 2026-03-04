@@ -279,7 +279,7 @@ export function AppShell({ title, children }: { title?: string; children: React.
           await fetch(api.approvePlan(runId), { method: 'POST' })
         );
         setApproval(null);
-        router.push(`${BASE}/runs/${encodeURIComponent(data.execute_run_id)}`);
+        router.push(`/runs/${encodeURIComponent(data.execute_run_id)}`);
       } else {
         await j(await fetch(api.approveRun(runId), { method: 'POST' }));
         setApproval(null);
@@ -490,7 +490,7 @@ export function AppShell({ title, children }: { title?: string; children: React.
                 <button
                   onClick={() => {
                     setApproval(null);
-                    router.push(`${BASE}/runs/${encodeURIComponent(approval.run_id!)}`);
+                    router.push(`/runs/${encodeURIComponent(approval.run_id!)}`);
                   }}
                   className="rounded-lg bg-black/25 px-3 py-2 text-sm text-zinc-200 ring-1 ring-matrix-500/20 hover:bg-black/35"
                 >

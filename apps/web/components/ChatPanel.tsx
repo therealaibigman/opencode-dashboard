@@ -52,7 +52,7 @@ export function ChatPanel() {
     });
     const data = await j<{ run: { id: string } }>(res);
     setLog((p) => [`Queued ${kind} run ${data.run.id} (task: ${taskId ?? 'none'})`, ...p]);
-    router.push(`${BASE}/runs/${encodeURIComponent(data.run.id)}`);
+    router.push(`/runs/${encodeURIComponent(data.run.id)}`);
     return data.run.id;
   }
 

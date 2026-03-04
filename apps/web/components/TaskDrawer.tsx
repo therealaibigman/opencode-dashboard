@@ -161,7 +161,7 @@ export function TaskDrawer({ task, onClose }: { task: Task; onClose: () => void 
       });
       const data = await j<{ run: { id: string } }>(res);
       setSelectedRunId(data.run.id);
-      router.push(`${BASE}/runs/${encodeURIComponent(data.run.id)}`);
+      router.push(`/runs/${encodeURIComponent(data.run.id)}`);
     } catch (e: any) {
       setErr(String(e?.message ?? e));
     } finally {
@@ -337,7 +337,7 @@ export function TaskDrawer({ task, onClose }: { task: Task; onClose: () => void 
 
                 {selectedRunId ? (
                   <button
-                    onClick={() => router.push(`${BASE}/runs/${encodeURIComponent(selectedRunId)}`)}
+                    onClick={() => router.push(`/runs/${encodeURIComponent(selectedRunId)}`)}
                     className="w-full rounded-lg bg-black/25 px-3 py-2 text-sm text-zinc-200 ring-1 ring-matrix-500/20 hover:bg-black/35"
                   >
                     Open selected run

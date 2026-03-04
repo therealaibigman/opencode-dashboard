@@ -176,11 +176,11 @@ export function RunsPanel() {
             const kids = childrenByParent.get(r.id) ?? [];
             return (
               <div key={r.id} className="space-y-2">
-                <RunButton r={r} onOpen={() => router.push(`${BASE}/runs/${encodeURIComponent(r.id)}`)} />
+                <RunButton r={r} onOpen={() => router.push(`/runs/${encodeURIComponent(r.id)}`)} />
                 {kids.length ? (
                   <div className="space-y-2">
                     {kids.map((k) => (
-                      <RunButton key={k.id} r={k} indent onOpen={() => router.push(`${BASE}/runs/${encodeURIComponent(k.id)}`)} />
+                      <RunButton key={k.id} r={k} indent onOpen={() => router.push(`/runs/${encodeURIComponent(k.id)}`)} />
                     ))}
                   </div>
                 ) : null}
