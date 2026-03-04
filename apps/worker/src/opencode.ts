@@ -4,6 +4,7 @@ export type OpenCodeRunResult = {
   exitCode: number;
   stdout: string;
   stderr: string;
+  cancelled?: boolean;
 };
 
 export async function opencodeRun({
@@ -12,7 +13,8 @@ export async function opencodeRun({
   timeoutMs = 10 * 60 * 1000,
   model,
   onStdout,
-  onStderr
+  onStderr,
+  signal
 }: {
   cwd: string;
   message: string;
@@ -20,7 +22,12 @@ export async function opencodeRun({
   model?: string;
   onStdout?: (chunk: string) => void;
   onStderr?: (chunk: string) => void;
+  signal?: AbortSignal;
 }): Promise<OpenCodeRunResult> {
+  if (signal?.aborted) {
+    return { exitCode: 137, stdout: '', stderr: '[worker] cancelled (pre-start)', cancelled: true };
+  }
+
   const stub = String(process.env.OPENCODE_STUB ?? '') === '1';
   if (stub) {
     const fake = [
@@ -32,7 +39,15 @@ export async function opencodeRun({
     ].join('\n');
 
     onStdout?.(fake + '\n');
-    await new Promise((r) => setTimeout(r, 350));
+
+    // Allow cancellation even in stub mode.
+    const start = Date.now();
+    while (Date.now() - start < 350) {
+      if (signal?.aborted) {
+        return { exitCode: 137, stdout: fake + '\n', stderr: '[worker] cancelled (stub)', cancelled: true };
+      }
+      await new Promise((r) => setTimeout(r, 25));
+    }
 
     return { exitCode: 0, stdout: fake + '\n', stderr: '' };
   }
@@ -51,6 +66,23 @@ export async function opencodeRun({
 
     let stdout = '';
     let stderr = '';
+    let cancelled = false;
+
+    const onAbort = () => {
+      cancelled = true;
+      const msg = '\n[worker] cancelled';
+      stderr += msg;
+      onStderr?.(msg);
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        // ignore
+      }
+    };
+
+    if (signal) {
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
 
     const t = setTimeout(() => {
       const msg = `\n[worker] timeout after ${timeoutMs}ms`;
@@ -71,14 +103,19 @@ export async function opencodeRun({
       onStderr?.(s);
     });
 
-    child.on('close', (code) => {
+    const finish = (exitCode: number) => {
       clearTimeout(t);
-      resolve({ exitCode: code ?? 1, stdout, stderr });
+      if (signal) signal.removeEventListener('abort', onAbort);
+      resolve({ exitCode, stdout, stderr, cancelled: cancelled || signal?.aborted || false });
+    };
+
+    child.on('close', (code) => {
+      finish(code ?? 1);
     });
 
     child.on('error', (err) => {
-      clearTimeout(t);
-      resolve({ exitCode: 1, stdout, stderr: `${stderr}\n${String(err)}` });
+      stderr = `${stderr}\n${String(err)}`;
+      finish(1);
     });
   });
 }

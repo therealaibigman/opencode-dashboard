@@ -40,12 +40,17 @@ function fmtTs(iso: string | null | undefined) {
   return d.toLocaleString(undefined, { hour12: false });
 }
 
+function canCancel(status: string | null | undefined) {
+  return status === 'queued' || status === 'running' || status === 'needs_approval';
+}
+
 export function RunDetails({ runId }: { runId: string }) {
   const BASE = useBasePath();
 
   const api = useMemo(
     () => ({
       run: `${BASE}/api/runs/${encodeURIComponent(runId)}`,
+      cancel: `${BASE}/api/runs/${encodeURIComponent(runId)}/cancel`,
       artifacts: `${BASE}/api/runs/${encodeURIComponent(runId)}/artifacts`,
       artifact: (id: string) => `${BASE}/api/artifacts/${encodeURIComponent(id)}`
     }),
@@ -57,6 +62,7 @@ export function RunDetails({ runId }: { runId: string }) {
   const [openArtifact, setOpenArtifact] = useState<ArtifactFull | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [cancelling, setCancelling] = useState(false);
 
   async function refresh() {
     setErr(null);
@@ -71,6 +77,24 @@ export function RunDetails({ runId }: { runId: string }) {
       setErr(String(e?.message ?? e));
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function cancelRun() {
+    if (!canCancel(run?.status)) return;
+
+    const ok = window.confirm(`Cancel run ${runId}?`);
+    if (!ok) return;
+
+    setErr(null);
+    setCancelling(true);
+    try {
+      await j(await fetch(api.cancel, { method: 'POST' }));
+      await refresh();
+    } catch (e: any) {
+      setErr(String(e?.message ?? e));
+    } finally {
+      setCancelling(false);
     }
   }
 
@@ -101,6 +125,15 @@ export function RunDetails({ runId }: { runId: string }) {
             className="rounded-lg bg-black/25 px-3 py-2 text-sm text-zinc-200 ring-1 ring-matrix-500/20 hover:bg-black/35"
           >
             Refresh
+          </button>
+
+          <button
+            onClick={() => cancelRun()}
+            disabled={cancelling || !canCancel(run?.status)}
+            className="rounded-lg bg-red-500/10 px-3 py-2 text-sm text-red-100 ring-1 ring-red-500/30 hover:bg-red-500/15 disabled:opacity-60"
+            title={canCancel(run?.status) ? 'Cancel this run' : 'Can only cancel queued/running runs'}
+          >
+            {cancelling ? 'Cancelling…' : 'Cancel'}
           </button>
         </div>
       </div>

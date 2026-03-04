@@ -80,6 +80,11 @@ async function writeArtifact({
   return id;
 }
 
+async function isRunCancelled(db: any, runId: string): Promise<boolean> {
+  const rows = await db.select({ status: runs.status }).from(runs).where(eq(runs.id, runId)).limit(1);
+  return rows?.[0]?.status === 'cancelled';
+}
+
 async function processRun(db: any, runId: string) {
   const runRows = await db.select().from(runs).where(eq(runs.id, runId)).limit(1);
   const runRow = runRows[0];
@@ -87,6 +92,9 @@ async function processRun(db: any, runId: string) {
   const taskId = (runRow?.taskId as string | null | undefined) ?? null;
 
   if (!projectId) throw new Error(`Run ${runId} missing projectId`);
+
+  // If someone cancelled it while queued, skip.
+  if (runRow?.status === 'cancelled') return;
 
   let taskTitle = '';
   let taskBody = '';
@@ -192,11 +200,28 @@ async function processRun(db: any, runId: string) {
     tail = '';
   };
 
+  // Cancellation watchdog: poll DB while tool runs.
+  const controller = new AbortController();
+  let cancelled = false;
+  const cancelTimer = setInterval(() => {
+    void (async () => {
+      try {
+        if (!cancelled && (await isRunCancelled(db, runId))) {
+          cancelled = true;
+          controller.abort();
+        }
+      } catch {
+        // ignore
+      }
+    })();
+  }, 1000);
+
   const result = await opencodeRun({
     cwd: ws,
     message: msg,
     model,
     timeoutMs,
+    signal: controller.signal,
     onStdout: (chunk) => {
       tail += chunk;
       if (tail.length > 2000) tail = tail.slice(-2000);
@@ -208,6 +233,9 @@ async function processRun(db: any, runId: string) {
       void maybeEmitProgress();
     }
   });
+
+  clearInterval(cancelTimer);
+  cancelled = cancelled || result.cancelled === true;
 
   // flush any remaining tail
   await maybeEmitProgress();
@@ -233,7 +261,7 @@ async function processRun(db: any, runId: string) {
     content: result.stderr ?? ''
   });
 
-  // Emit artifact.created events (project feed can show them later)
+  // Emit artifact.created events
   await appendEventRow(db, {
     id: newId('evt'),
     ts: nowIso(),
@@ -261,6 +289,49 @@ async function processRun(db: any, runId: string) {
     step_id: stepId,
     payload: { artifact: { id: stderrId, kind: 'stderr', name: 'opencode stderr' } }
   });
+
+  if (cancelled) {
+    await appendEventRow(db, {
+      id: newId('evt'),
+      ts: nowIso(),
+      seq: seq++,
+      type: 'tool.call.failed',
+      source: 'worker',
+      severity: 'warn',
+      project_id: projectId,
+      task_id: taskId ?? undefined,
+      run_id: runId,
+      step_id: stepId,
+      payload: {
+        tool: 'opencode.run',
+        result: {
+          exit_code: result.exitCode,
+          cancelled: true,
+          stdout_artifact_id: stdoutId,
+          stderr_artifact_id: stderrId,
+          stdout_preview: clipPreview(result.stdout ?? ''),
+          stderr_preview: clipPreview(result.stderr ?? '')
+        }
+      }
+    });
+
+    await appendEventRow(db, {
+      id: newId('evt'),
+      ts: nowIso(),
+      seq: seq++,
+      type: 'run.cancelled',
+      source: 'worker',
+      severity: 'warn',
+      project_id: projectId,
+      task_id: taskId ?? undefined,
+      run_id: runId,
+      payload: { message: 'Run cancelled' }
+    });
+
+    // Do not overwrite status if API already set it.
+    await db.update(runs).set({ status: 'cancelled', finishedAt: new Date() }).where(eq(runs.id, runId));
+    return;
+  }
 
   if (result.exitCode === 0) {
     await appendEventRow(db, {
