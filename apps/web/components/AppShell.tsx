@@ -32,6 +32,13 @@ export function AppShell({ title, children }: { title?: string; children: React.
   const [newProjectId, setNewProjectId] = useState('');
   const [err, setErr] = useState<string | null>(null);
 
+  // project source config
+  const selected = projects.find((p: any) => p.id === selectedProjectId) as any;
+  const [localPath, setLocalPath] = useState('');
+  const [repoUrl, setRepoUrl] = useState('');
+  const [defaultBranch, setDefaultBranch] = useState('main');
+  const [savingSource, setSavingSource] = useState(false);
+
   // approval modal state
   const [approval, setApproval] = useState<ApprovalRequested | null>(null);
   const [approvalErr, setApprovalErr] = useState<string | null>(null);
@@ -54,6 +61,40 @@ export function AppShell({ title, children }: { title?: string; children: React.
     }),
     [BASE]
   );
+
+  // hydrate source fields when selection changes
+  useEffect(() => {
+    setLocalPath(String(selected?.localPath ?? ''));
+    setRepoUrl(String(selected?.repoUrl ?? ''));
+    setDefaultBranch(String(selected?.defaultBranch ?? 'main'));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedProjectId, projects.length]);
+
+  async function saveProjectSource() {
+    if (!selectedProjectId) return;
+
+    setErr(null);
+    setSavingSource(true);
+    try {
+      await j(
+        await fetch(api.project(selectedProjectId), {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            local_path: localPath.trim() || null,
+            repo_url: repoUrl.trim() || null,
+            default_branch: defaultBranch.trim() || null
+          })
+        })
+      );
+
+      await refreshProjects();
+    } catch (e: any) {
+      setErr(String(e?.message ?? e));
+    } finally {
+      setSavingSource(false);
+    }
+  }
 
   async function ensureDemoProject() {
     setErr(null);
@@ -107,7 +148,7 @@ export function AppShell({ title, children }: { title?: string; children: React.
     if (!selectedProjectId) return;
 
     const p = projects.find((x) => x.id === selectedProjectId);
-    const label = p ? `${p.name} (${p.id})` : selectedProjectId;
+    const label = p ? `${(p as any).name} (${(p as any).id})` : selectedProjectId;
 
     const ok = window.confirm(
       `Delete project ${label}?\n\nThis will permanently delete tasks, runs, artifacts, and events for this project.`
@@ -140,7 +181,6 @@ export function AppShell({ title, children }: { title?: string; children: React.
       // ignore
     }
 
-    // If we have no cursor, start slightly in the past so we catch events that just happened.
     if (!afterTs) afterTs = new Date(Date.now() - 5000).toISOString();
 
     const es = new EventSource(api.projectEvents(selectedProjectId, afterTs));
@@ -150,25 +190,21 @@ export function AppShell({ title, children }: { title?: string; children: React.
         const data = JSON.parse(ev.data) as ApprovalRequested;
         if (!data?.id || data.type !== 'approval.requested') return;
 
-        // advance cursor
         try {
           if (data.ts) sessionStorage.setItem(storageKey, data.ts);
         } catch {
           // ignore
         }
 
-        // de-dupe by event id (within a connection)
         if (lastApprovalIdRef.current === data.id) return;
         lastApprovalIdRef.current = data.id;
 
         const runId = data.run_id ?? '';
         if (!runId) return;
 
-        // don't spam: if we already showed this run, ignore
         if (shownRunIdsRef.current.has(runId)) return;
         shownRunIdsRef.current.add(runId);
 
-        // if a modal is already open for this run, ignore
         if (approval?.run_id && approval.run_id === runId) return;
 
         setApprovalErr(null);
@@ -202,7 +238,6 @@ export function AppShell({ title, children }: { title?: string; children: React.
       setApproval(null);
     } catch (e: any) {
       const msg = String(e?.message ?? e);
-      // If the run already moved on, close the modal instead of spamming.
       if (msg.includes('needs_approval')) setApproval(null);
       else setApprovalErr(msg);
     } finally {
@@ -247,13 +282,47 @@ export function AppShell({ title, children }: { title?: string; children: React.
           value={selectedProjectId}
           onChange={(e) => setSelectedProjectId(e.target.value)}
         >
-          {projects.map((p) => (
+          {projects.map((p: any) => (
             <option key={p.id} value={p.id}>
               {p.name} ({p.id})
             </option>
           ))}
-          {!projects.find((p) => p.id === selectedProjectId) && <option value={selectedProjectId}>{selectedProjectId}</option>}
+          {!projects.find((p: any) => p.id === selectedProjectId) && <option value={selectedProjectId}>{selectedProjectId}</option>}
         </select>
+
+        <div className="mt-4 rounded-xl border border-matrix-500/15 bg-black/15 p-3">
+          <div className="mb-2 text-xs font-medium text-matrix-200/90">Project source</div>
+          <div className="space-y-2">
+            <input
+              value={localPath}
+              onChange={(e) => setLocalPath(e.target.value)}
+              placeholder="local path (optional)"
+              className="w-full rounded-lg border border-matrix-500/20 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:ring-1 focus:ring-matrix-500/40"
+            />
+            <input
+              value={repoUrl}
+              onChange={(e) => setRepoUrl(e.target.value)}
+              placeholder="repo url (optional)"
+              className="w-full rounded-lg border border-matrix-500/20 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:ring-1 focus:ring-matrix-500/40"
+            />
+            <input
+              value={defaultBranch}
+              onChange={(e) => setDefaultBranch(e.target.value)}
+              placeholder="default branch (main)"
+              className="w-full rounded-lg border border-matrix-500/20 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:ring-1 focus:ring-matrix-500/40"
+            />
+            <button
+              onClick={saveProjectSource}
+              disabled={savingSource || !selectedProjectId}
+              className="w-full rounded-lg bg-matrix-500/15 px-3 py-2 text-sm text-matrix-100 ring-1 ring-matrix-500/40 hover:bg-matrix-500/20 disabled:opacity-60"
+            >
+              {savingSource ? 'Saving…' : 'Save Source'}
+            </button>
+            <div className="text-[11px] text-zinc-500">
+              If local path is set, the worker mirrors it into the workspace (excludes node_modules, .git, dist, etc.).
+            </div>
+          </div>
+        </div>
 
         <div className="mt-4 rounded-xl border border-matrix-500/15 bg-black/15 p-3">
           <div className="mb-2 text-xs font-medium text-matrix-200/90">Create project</div>
