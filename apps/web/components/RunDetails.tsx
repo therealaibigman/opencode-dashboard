@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import { useBasePath } from './useBasePath';
 import { RunTimeline } from './RunTimeline';
@@ -89,9 +90,9 @@ export function RunDetails({ runId }: { runId: string }) {
         <div className="min-w-0 space-y-1">
           <div className="text-xs text-zinc-400">Run</div>
           <div className="min-w-0 break-all text-lg font-semibold text-zinc-100">{runId}</div>
-          <a className="text-xs text-matrix-200/90 hover:underline" href={'/'}>
+          <Link className="text-xs text-matrix-200/90 hover:underline" href="/">
             ← Back to dashboard
-          </a>
+          </Link>
         </div>
 
         <div className="flex items-center gap-2">
