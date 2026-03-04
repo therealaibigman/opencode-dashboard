@@ -8,3 +8,4 @@ export * from './plan';
 export * from './policy';
 export * from './patch';
 export * from './workspaces';
+export * from './github';

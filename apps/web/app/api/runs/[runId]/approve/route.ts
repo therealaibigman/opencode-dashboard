@@ -11,7 +11,8 @@ import {
   extractTouchedPaths,
   policyCheckCommand,
   policyCheckPath,
-  wrapHunkAsFilePatch
+  wrapHunkAsFilePatch,
+  createGithubPr
 } from '@ocdash/shared';
 import { newId } from '@ocdash/shared';
 import { appendProjectEvent } from '../../../_lib/eventlog';
@@ -28,35 +29,6 @@ async function runCmd(cwd: string, cmd: string, timeoutMs = 10 * 60 * 1000) {
   const [bin, ...args] = cmd.split(/\s+/);
   return await new Promise<{ exitCode: number; stdout: string; stderr: string }>((resolve) => {
     const child = spawn(bin!, args, { cwd, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
-    let stdout = '';
-    let stderr = '';
-
-    const t = setTimeout(() => {
-      stderr += `\n[api] timeout after ${timeoutMs}ms`;
-      child.kill('SIGKILL');
-    }, timeoutMs);
-
-    child.stdout.on('data', (d) => (stdout += d.toString()));
-    child.stderr.on('data', (d) => (stderr += d.toString()));
-
-    child.on('close', (code) => {
-      clearTimeout(t);
-      resolve({ exitCode: code ?? 1, stdout, stderr });
-    });
-
-    child.on('error', (err) => {
-      clearTimeout(t);
-      resolve({ exitCode: 1, stdout, stderr: `${stderr}\n${String(err)}` });
-    });
-  });
-}
-
-async function runCmdShell(cwd: string, cmd: string, timeoutMs = 10 * 60 * 1000) {
-  const dec = policyCheckCommand(cmd);
-  if (!dec.ok) return { exitCode: 126, stdout: '', stderr: `[policy] ${dec.reason}` };
-
-  return await new Promise<{ exitCode: number; stdout: string; stderr: string }>((resolve) => {
-    const child = spawn('bash', ['-lc', cmd], { cwd, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
 
@@ -108,42 +80,6 @@ async function writeArtifact({
     contentText: content
   });
   return id;
-}
-
-async function createGithubPr({
-  ws,
-  runId,
-  baseBranch,
-  title,
-  body
-}: {
-  ws: string;
-  runId: string;
-  baseBranch: string;
-  title: string;
-  body: string;
-}): Promise<{ ok: true; url: string; branch: string } | { ok: false; error: string }> {
-  const rem = await runCmd(ws, 'git remote');
-  if (rem.exitCode !== 0) return { ok: false, error: rem.stderr || 'git remote failed' };
-  const remotes = rem.stdout.split(/\s+/).map((x) => x.trim()).filter(Boolean);
-  if (!remotes.includes('origin')) return { ok: false, error: 'no origin remote configured' };
-
-  const branch = `ocdash/run_${runId}`;
-
-  const b = await runCmd(ws, `git checkout -B ${branch}`);
-  if (b.exitCode !== 0) return { ok: false, error: b.stderr || b.stdout || 'git checkout failed' };
-
-  const push = await runCmd(ws, `git push -u origin ${branch}`);
-  if (push.exitCode !== 0) return { ok: false, error: push.stderr || push.stdout || 'git push failed' };
-
-  const cmd = `gh pr create --base ${baseBranch} --head ${branch} --title ${JSON.stringify(title)} --body ${JSON.stringify(body)}`;
-  const pr = await runCmdShell(ws, cmd);
-  if (pr.exitCode !== 0) return { ok: false, error: pr.stderr || pr.stdout || 'gh pr create failed' };
-
-  const url = (pr.stdout.trim().split(/\s+/).find((x) => x.startsWith('http')) ?? '').trim();
-  if (!url) return { ok: false, error: `PR created but URL not detected: ${pr.stdout.trim()}` };
-
-  return { ok: true, url, branch };
 }
 
 async function ensureGitRepo(ws: string) {

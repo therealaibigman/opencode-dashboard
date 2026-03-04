@@ -36,6 +36,15 @@ type Task = {
   updatedAt: string;
 };
 
+type RunSummary = {
+  id: string;
+  taskId: string | null;
+  kind: 'execute' | 'plan';
+  status: string;
+  prUrl: string | null;
+  createdAt: string;
+};
+
 const COLS: { key: TaskStatus; label: string }[] = [
   { key: 'inbox', label: 'Inbox' },
   { key: 'planned', label: 'Planned' },
@@ -90,14 +99,24 @@ function posBetween(prev: number | null, next: number | null) {
   return prev + (next - prev) / 2;
 }
 
+function statusDot(status: string) {
+  if (status === 'succeeded') return 'bg-matrix-400';
+  if (status === 'failed') return 'bg-red-400';
+  if (status === 'needs_approval') return 'bg-yellow-400';
+  if (status === 'running') return 'bg-blue-400';
+  return 'bg-zinc-400';
+}
+
 function TaskCard({
   t,
+  run,
   onOpen,
   onMoveLeft,
   onMoveRight,
   onQueue
 }: {
   t: Task;
+  run: RunSummary | null;
   onOpen: () => void;
   onMoveLeft: () => void;
   onMoveRight: () => void;
@@ -128,6 +147,28 @@ function TaskCard({
           <div className="mb-2 min-w-0 line-clamp-3 break-words text-[11px] text-zinc-400">{t.bodyMd}</div>
         ) : null}
       </button>
+
+      {run ? (
+        <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px] text-zinc-300">
+          <span className={`h-2 w-2 rounded-full ${statusDot(run.status)}`} title={run.status} />
+          <span className="rounded-full bg-black/20 px-2 py-1 ring-1 ring-matrix-500/10">{run.kind}</span>
+          <span className="break-all text-zinc-400">{run.id}</span>
+          {run.status === 'needs_approval' ? (
+            <span className="rounded-full bg-yellow-500/10 px-2 py-1 text-yellow-100 ring-1 ring-yellow-500/25">needs approval</span>
+          ) : null}
+          {run.prUrl ? (
+            <a
+              href={run.prUrl}
+              target="_blank"
+              rel="noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className="ml-auto rounded-full bg-matrix-500/15 px-2 py-1 text-matrix-100 ring-1 ring-matrix-500/30 hover:bg-matrix-500/20"
+            >
+              PR
+            </a>
+          ) : null}
+        </div>
+      ) : null}
 
       <div className="flex flex-wrap gap-2">
         <button
@@ -175,6 +216,8 @@ export function KanbanPanel() {
   const [archived, setArchived] = useState<Task[]>([]);
   const [showArchived, setShowArchived] = useState(false);
 
+  const [runsByTask, setRunsByTask] = useState<Record<string, RunSummary>>({});
+
   const [err, setErr] = useState<string | null>(null);
   const [lastSync, setLastSync] = useState<number | null>(null);
   const [openTask, setOpenTask] = useState<Task | null>(null);
@@ -196,6 +239,33 @@ export function KanbanPanel() {
     [BASE]
   );
 
+  async function refreshRunsSummary() {
+    try {
+      const data = await j<{ runs: any[] }>(
+        await fetch(`${api.runs}?project_id=${encodeURIComponent(projectId)}`, { cache: 'no-store' })
+      );
+
+      const map: Record<string, RunSummary> = {};
+      for (const r of data.runs ?? []) {
+        const tid = r.taskId ?? null;
+        if (!tid) continue;
+        if (!map[tid]) {
+          map[tid] = {
+            id: r.id,
+            taskId: r.taskId,
+            kind: r.kind,
+            status: r.status,
+            prUrl: r.prUrl ?? null,
+            createdAt: r.createdAt
+          };
+        }
+      }
+      setRunsByTask(map);
+    } catch {
+      // ignore
+    }
+  }
+
   async function refresh() {
     if (refreshing.current) return;
     refreshing.current = true;
@@ -214,6 +284,8 @@ export function KanbanPanel() {
       setTasks(active);
       setArchived(arc);
       setLastSync(Date.now());
+
+      await refreshRunsSummary();
     } catch (e: any) {
       setErr(String(e?.message ?? e));
     } finally {
@@ -249,7 +321,11 @@ export function KanbanPanel() {
       'run.created',
       'run.started',
       'run.completed',
-      'run.failed'
+      'run.failed',
+      'approval.requested',
+      'approval.resolved',
+      'tool.call.completed',
+      'tool.call.failed'
     ];
     for (const t of types) es.addEventListener(t, onAny);
 
@@ -426,6 +502,7 @@ export function KanbanPanel() {
                       <TaskCard
                         key={t.id}
                         t={t}
+                        run={runsByTask[t.id] ?? null}
                         onOpen={() => setOpenTask(t)}
                         onMoveLeft={() => moveTask(t, -1)}
                         onMoveRight={() => moveTask(t, 1)}
@@ -447,9 +524,7 @@ export function KanbanPanel() {
           {activeTask ? (
             <div className="min-w-0 rounded-lg border border-matrix-500/30 bg-black/50 p-2 text-xs text-zinc-200">
               <div className="min-w-0 break-words text-sm font-medium text-zinc-100">{activeTask.title}</div>
-              {activeTask.bodyMd ? (
-                <div className="mt-1 line-clamp-3 break-words text-[11px] text-zinc-400">{activeTask.bodyMd}</div>
-              ) : null}
+              {activeTask.bodyMd ? <div className="mt-1 line-clamp-3 break-words text-[11px] text-zinc-400">{activeTask.bodyMd}</div> : null}
             </div>
           ) : null}
         </DragOverlay>
