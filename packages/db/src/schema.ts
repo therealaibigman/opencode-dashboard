@@ -85,6 +85,11 @@ export const runs = pgTable(
 
     status: runStatusEnum('status').notNull().default('queued'),
     modelProfile: text('model_profile').notNull().default('balanced'),
+
+    // GitHub integration: persisted PR info (optional)
+    prUrl: text('pr_url'),
+    prBranch: text('pr_branch'),
+
     startedAt: timestamp('started_at', { withTimezone: true }),
     finishedAt: timestamp('finished_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()

@@ -122,7 +122,7 @@ async function createGithubPr({
   baseBranch: string;
   title: string;
   body: string;
-}): Promise<{ ok: true; url: string } | { ok: false; error: string }> {
+}): Promise<{ ok: true; url: string; branch: string } | { ok: false; error: string }> {
   const rem = await runCmd(ws, 'git remote');
   if (rem.exitCode !== 0) return { ok: false, error: rem.stderr || 'git remote failed' };
   const remotes = rem.stdout.split(/\s+/).map((x) => x.trim()).filter(Boolean);
@@ -143,7 +143,7 @@ async function createGithubPr({
   const url = (pr.stdout.trim().split(/\s+/).find((x) => x.startsWith('http')) ?? '').trim();
   if (!url) return { ok: false, error: `PR created but URL not detected: ${pr.stdout.trim()}` };
 
-  return { ok: true, url };
+  return { ok: true, url, branch };
 }
 
 async function ensureGitRepo(ws: string) {
@@ -322,6 +322,7 @@ export async function POST(_req: Request, { params }: { params: Promise<{ runId:
     const prRes = await createGithubPr({ ws, runId: rid, baseBranch, title: prTitle, body: prBody });
 
     if (prRes.ok) {
+      await db.update(runs).set({ prUrl: prRes.url, prBranch: prRes.branch }).where(eq(runs.id, rid));
       const prArtId = await writeArtifact({
         db,
         projectId: r.projectId,

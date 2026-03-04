@@ -13,6 +13,9 @@ type RunRow = {
   status: string;
   modelProfile: string;
   kind: 'execute' | 'plan';
+  parentRunId: string | null;
+  prUrl: string | null;
+  prBranch: string | null;
   startedAt: string | null;
   finishedAt: string | null;
   createdAt: string;
@@ -165,6 +168,7 @@ export function RunDetails({ runId }: { runId: string }) {
       rejectPlan: `${BASE}/api/runs/${encodeURIComponent(runId)}/reject-plan`,
       artifacts: `${BASE}/api/runs/${encodeURIComponent(runId)}/artifacts`,
       artifact: (id: string) => `${BASE}/api/artifacts/${encodeURIComponent(id)}`,
+      events: `${BASE}/api/runs/${encodeURIComponent(runId)}/events`,
       eventsStream: `${BASE}/api/runs/${encodeURIComponent(runId)}/events/stream`
     }),
     [BASE, runId]
@@ -178,6 +182,7 @@ export function RunDetails({ runId }: { runId: string }) {
   const [cancelling, setCancelling] = useState(false);
   const [approving, setApproving] = useState(false);
   const [rejecting, setRejecting] = useState(false);
+  const [prError, setPrError] = useState<string | null>(null);
 
   const stopRef = useRef(false);
 
@@ -244,7 +249,7 @@ export function RunDetails({ runId }: { runId: string }) {
     }
 
     const ok = window.confirm(
-      `Approve and apply changes for run ${runId}?\n\nThis will apply the patch, run checks, and commit automatically.`
+      `Approve and apply changes for run ${runId}?\n\nThis will apply the patch, run checks, commit, and attempt to open a PR.`
     );
     if (!ok) return;
 
@@ -299,10 +304,48 @@ export function RunDetails({ runId }: { runId: string }) {
     setOpenArtifact(data.artifact);
   }
 
+  const githubPr = useMemo(() => {
+    // Prefer persisted run.prUrl, fallback to github_pr artifact content.
+    if (run?.prUrl) return { url: run.prUrl, branch: run.prBranch ?? null };
+    const pr = artifacts
+      .filter((a) => a.kind === 'github_pr')
+      .sort((a, b) => (a.created_at > b.created_at ? -1 : 1))[0];
+    return pr ? { url: '(see artifact)', branch: null } : null;
+  }, [artifacts, run?.prBranch, run?.prUrl]);
+
   useEffect(() => {
     refresh().catch(() => void 0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [api.run, api.artifacts]);
+
+  // Poll for github.pr.create failures for a small banner (SSE can be flaky behind proxies).
+  useEffect(() => {
+    if (!isActive(run?.status)) return;
+
+    let stop = false;
+    const tick = async () => {
+      try {
+        const data = await j<{ events: any[] }>(await fetch(`${api.events}?limit=200`, { cache: 'no-store' }));
+        const failed = (data.events ?? [])
+          .filter((e) => e.type === 'tool.call.failed' && e.payload?.tool === 'github.pr.create')
+          .slice(-1)[0];
+        if (!stop) setPrError(failed?.payload?.error ? String(failed.payload.error) : null);
+      } catch {
+        // ignore
+      }
+    };
+
+    tick().catch(() => void 0);
+    const t = setInterval(() => {
+      if (stop) return;
+      tick().catch(() => void 0);
+    }, 2500);
+
+    return () => {
+      stop = true;
+      clearInterval(t);
+    };
+  }, [api.events, run?.status]);
 
   useEffect(() => {
     stopRef.current = false;
@@ -372,13 +415,29 @@ export function RunDetails({ runId }: { runId: string }) {
         </div>
       </div>
 
+      {prError ? (
+        <div className="rounded-xl border border-yellow-500/25 bg-yellow-950/20 p-3 text-sm text-yellow-50">
+          GitHub PR creation failed: <span className="text-yellow-100/80">{prError}</span>
+        </div>
+      ) : null}
+
+      {run?.prUrl ? (
+        <div className="flex flex-wrap items-center gap-2 rounded-xl border border-matrix-500/20 bg-black/20 p-3">
+          <div className="text-sm text-zinc-200">PR:</div>
+          <a className="break-all text-sm text-matrix-200/90 hover:underline" href={run.prUrl} target="_blank" rel="noreferrer">
+            {run.prUrl}
+          </a>
+          {run.prBranch ? <span className="text-[11px] text-zinc-500">({run.prBranch})</span> : null}
+        </div>
+      ) : null}
+
       {run?.status === 'needs_approval' ? (
         <div className="rounded-xl border border-yellow-500/30 bg-yellow-950/20 p-3">
           <div className="mb-2 text-sm font-medium text-yellow-100">Approval required</div>
           <div className="mb-3 text-xs text-yellow-100/80">
             {run.kind === 'plan'
               ? 'This run produced a plan. Approve to queue an execute run.'
-              : 'This run generated a patch but policy blocked auto-apply. You can approve to apply the patch, run checks, and commit.'}
+              : 'This run generated a patch but policy blocked auto-apply. You can approve to apply the patch, run checks, commit, and open a PR.'}
           </div>
           <div className="flex flex-wrap gap-2">
             <button
@@ -386,7 +445,7 @@ export function RunDetails({ runId }: { runId: string }) {
               disabled={approving || rejecting}
               className="rounded-lg bg-yellow-500/15 px-3 py-2 text-sm text-yellow-100 ring-1 ring-yellow-500/30 hover:bg-yellow-500/20 disabled:opacity-60"
             >
-              {approving ? 'Approving…' : run.kind === 'plan' ? 'Approve plan → Execute' : 'Approve + Apply + Commit'}
+              {approving ? 'Approving…' : run.kind === 'plan' ? 'Approve plan → Execute' : 'Approve + Apply + Commit + PR'}
             </button>
             <button
               onClick={() => reject()}
@@ -422,6 +481,9 @@ export function RunDetails({ runId }: { runId: string }) {
               </div>
               <div className="min-w-0 break-all">
                 <span className="text-zinc-400">task:</span> {run.taskId ?? '—'}
+              </div>
+              <div className="min-w-0 break-all">
+                <span className="text-zinc-400">parent_run:</span> {run.parentRunId ?? '—'}
               </div>
               <div>
                 <span className="text-zinc-400">model_profile:</span> {run.modelProfile}

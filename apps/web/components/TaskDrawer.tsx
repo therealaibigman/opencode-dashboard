@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { useBasePath } from './useBasePath';
 import { useProject } from './ProjectContext';
 import { RunTimeline } from './RunTimeline';
@@ -19,8 +20,12 @@ type RunRow = {
   id: string;
   projectId: string;
   taskId: string | null;
+  parentRunId: string | null;
+  kind: 'execute' | 'plan';
   status: string;
   modelProfile: string;
+  prUrl: string | null;
+  prBranch: string | null;
   createdAt: string;
   startedAt: string | null;
   finishedAt: string | null;
@@ -33,6 +38,7 @@ async function j<T>(res: Response): Promise<T> {
 
 export function TaskDrawer({ task, onClose }: { task: Task; onClose: () => void }) {
   const BASE = useBasePath();
+  const router = useRouter();
   const { selectedProjectId: projectId } = useProject();
 
   const [title, setTitle] = useState(task.title);
@@ -44,6 +50,7 @@ export function TaskDrawer({ task, onClose }: { task: Task; onClose: () => void 
   const [runs, setRuns] = useState<RunRow[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [queueing, setQueueing] = useState<'plan' | 'execute' | null>(null);
 
   const api = useMemo(
     () => ({
@@ -134,6 +141,34 @@ export function TaskDrawer({ task, onClose }: { task: Task; onClose: () => void 
     }
   }
 
+  const latestPlan = runs.find((r) => r.kind === 'plan') ?? null;
+  const latestExec = runs.find((r) => r.kind === 'execute') ?? null;
+
+  async function queue(kind: 'plan' | 'execute', parentRunId?: string | null) {
+    setErr(null);
+    setQueueing(kind);
+    try {
+      const res = await fetch(api.runs, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          project_id: projectId,
+          task_id: task.id,
+          model_profile: 'balanced',
+          kind,
+          parent_run_id: parentRunId ?? null
+        })
+      });
+      const data = await j<{ run: { id: string } }>(res);
+      setSelectedRunId(data.run.id);
+      router.push(`/runs/${encodeURIComponent(data.run.id)}`);
+    } catch (e: any) {
+      setErr(String(e?.message ?? e));
+    } finally {
+      setQueueing(null);
+    }
+  }
+
   useEffect(() => {
     refreshRuns();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -192,6 +227,31 @@ export function TaskDrawer({ task, onClose }: { task: Task; onClose: () => void 
                   {saving ? 'Saving…' : 'Save'}
                 </button>
 
+                <button
+                  onClick={() => queue('plan')}
+                  disabled={saving || queueing !== null}
+                  className="rounded-lg bg-blue-500/20 px-3 py-2 text-sm font-medium text-blue-50 ring-1 ring-blue-500/40 hover:bg-blue-500/25 disabled:opacity-60"
+                >
+                  {queueing === 'plan' ? 'Planning…' : 'Plan'}
+                </button>
+
+                <button
+                  onClick={() => queue('execute')}
+                  disabled={saving || queueing !== null}
+                  className="rounded-lg bg-matrix-500/25 px-3 py-2 text-sm font-medium text-matrix-50 ring-1 ring-matrix-500/50 hover:bg-matrix-500/30 disabled:opacity-60"
+                >
+                  {queueing === 'execute' ? 'Executing…' : 'Execute'}
+                </button>
+
+                <button
+                  onClick={() => queue('execute', latestPlan?.id ?? null)}
+                  disabled={saving || queueing !== null || !latestPlan}
+                  className="rounded-lg bg-black/25 px-3 py-2 text-sm text-zinc-200 ring-1 ring-matrix-500/20 hover:bg-black/35 disabled:opacity-60"
+                  title={latestPlan ? `Uses plan ${latestPlan.id}` : 'No plan run available'}
+                >
+                  Execute from latest plan
+                </button>
+
                 {!archivedAt ? (
                   <button
                     onClick={archiveTask}
@@ -209,7 +269,23 @@ export function TaskDrawer({ task, onClose }: { task: Task; onClose: () => void 
                     Restore to inbox
                   </button>
                 )}
+
+                <button
+                  onClick={refreshRuns}
+                  className="rounded-lg bg-black/20 px-3 py-2 text-sm text-zinc-200 ring-1 ring-matrix-500/15 hover:bg-black/30"
+                >
+                  Refresh runs
+                </button>
               </div>
+
+              {latestExec?.prUrl ? (
+                <div className="mt-2 text-xs text-zinc-200">
+                  Latest PR:{' '}
+                  <a className="break-all text-matrix-200/90 hover:underline" href={latestExec.prUrl} target="_blank" rel="noreferrer">
+                    {latestExec.prUrl}
+                  </a>
+                </div>
+              ) : null}
 
               {err ? (
                 <div className="mt-3 rounded-lg border border-red-500/30 bg-red-950/30 p-2 text-xs text-red-100">{err}</div>
@@ -252,11 +328,21 @@ export function TaskDrawer({ task, onClose }: { task: Task; onClose: () => void 
                   >
                     <div className="flex items-center justify-between">
                       <div className="font-medium break-all">{r.id}</div>
-                      <div className="text-[11px] text-zinc-400">{r.status}</div>
+                      <div className="text-[11px] text-zinc-400">{r.kind} · {r.status}</div>
                     </div>
                     <div className="mt-1 text-[11px] text-zinc-500">profile: {r.modelProfile}</div>
+                    {r.parentRunId ? <div className="mt-1 break-all text-[10px] text-zinc-500">parent: {r.parentRunId}</div> : null}
                   </button>
                 ))}
+
+                {selectedRunId ? (
+                  <button
+                    onClick={() => router.push(`/runs/${encodeURIComponent(selectedRunId)}`)}
+                    className="w-full rounded-lg bg-black/25 px-3 py-2 text-sm text-zinc-200 ring-1 ring-matrix-500/20 hover:bg-black/35"
+                  >
+                    Open selected run
+                  </button>
+                ) : null}
               </div>
             </div>
 

@@ -186,13 +186,26 @@ async function createGithubPr({
   baseBranch: string;
   title: string;
   body: string;
-}): Promise<{ ok: true; url: string } | { ok: false; error: string }> {
+}): Promise<{ ok: true; url: string; branch: string } | { ok: false; error: string }> {
   const rem = await runCmd({ cwd: ws, cmd: 'git remote' });
   if (rem.exitCode !== 0) return { ok: false, error: rem.stderr || 'git remote failed' };
   const remotes = rem.stdout.split(/\s+/).map((x) => x.trim()).filter(Boolean);
   if (!remotes.includes('origin')) return { ok: false, error: 'no origin remote configured' };
 
   const branch = `ocdash/run_${runId}`;
+
+  // Idempotency: if PR already exists for this head branch, reuse it.
+  const existing = await runCmdShell({ cwd: ws, cmd: `gh pr list --head ${branch} --state open --json url --limit 1` });
+  if (existing.exitCode === 0) {
+    try {
+      const arr = JSON.parse(existing.stdout || '[]');
+      if (Array.isArray(arr) && arr[0]?.url) {
+        return { ok: true, url: String(arr[0].url), branch };
+      }
+    } catch {
+      // ignore
+    }
+  }
 
   const b = await runCmd({ cwd: ws, cmd: `git checkout -B ${branch}` });
   if (b.exitCode !== 0) return { ok: false, error: b.stderr || b.stdout || 'git checkout failed' };
@@ -207,7 +220,7 @@ async function createGithubPr({
   const url = (pr.stdout.trim().split(/\s+/).find((x) => x.startsWith('http')) ?? '').trim();
   if (!url) return { ok: false, error: `PR created but URL not detected: ${pr.stdout.trim()}` };
 
-  return { ok: true, url };
+  return { ok: true, url, branch };
 }
 
 
@@ -827,6 +840,7 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
       const prRes = await createGithubPr({ ws, runId, baseBranch, title: prTitle, body: prBody });
 
       if (prRes.ok) {
+        await db.update(runs).set({ prUrl: prRes.url, prBranch: prRes.branch }).where(eq(runs.id, runId));
         const prArtId = await writeArtifact({ db, projectId, runId, stepId, kind: 'github_pr', name: 'GitHub PR', content: prRes.url + '\n' });
         await appendEventRow(db, {
           id: newId('evt'),
@@ -932,6 +946,13 @@ async function main() {
     if (queued.length) {
       const runId = queued[0]!.id;
       try {
+        const claimed = await db
+          .update(runs)
+          .set({ status: 'running', startedAt: new Date() })
+          .where(and(eq(runs.id, runId), eq(runs.status, 'queued')))
+          .returning({ id: runs.id });
+        if (!claimed.length) continue;
+
         await processRun(db, runId);
       } catch (err) {
         console.error('Run failed', runId, err);

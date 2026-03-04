@@ -70,6 +70,19 @@ export async function ensureProjectWorkspace({ root, projectId }: { root: string
   return dir;
 }
 
+async function ensureOriginRemote({ workspace, repoUrl }: { workspace: string; repoUrl: string }) {
+  const rem = await runGit({ cwd: workspace, args: ['remote'] });
+  if (rem.exitCode !== 0) return;
+  const remotes = rem.stdout.split(/\s+/).map((x) => x.trim()).filter(Boolean);
+
+  if (!remotes.includes('origin')) {
+    await runGit({ cwd: workspace, args: ['remote', 'add', 'origin', repoUrl] });
+  } else {
+    // Keep origin in sync with configured repo URL.
+    await runGit({ cwd: workspace, args: ['remote', 'set-url', 'origin', repoUrl] });
+  }
+}
+
 export async function prepareWorkspaceForProject({
   root,
   project
@@ -102,6 +115,8 @@ export async function prepareWorkspaceForProject({
       const res = await runGit({ args: ['clone', '--depth', '1', '--branch', branch, repoUrl, workspace] });
       if (res.exitCode !== 0) throw new Error(`git clone failed: ${res.stderr || res.stdout}`);
     } else {
+      await ensureOriginRemote({ workspace, repoUrl });
+
       const fetch = await runGit({ cwd: workspace, args: ['fetch', '--all', '--prune'] });
       if (fetch.exitCode !== 0) throw new Error(`git fetch failed: ${fetch.stderr || fetch.stdout}`);
 
@@ -112,6 +127,9 @@ export async function prepareWorkspaceForProject({
 
       await runGit({ cwd: workspace, args: ['pull', '--ff-only'] });
     }
+
+    // Always ensure origin is correctly set (covers clone + later updates).
+    await ensureOriginRemote({ workspace, repoUrl });
 
     return { workspace, mode: 'clone' };
   }
