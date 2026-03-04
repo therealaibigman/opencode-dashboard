@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useBasePath } from './useBasePath';
+import { useSettings } from './useSettings';
 import { useProject } from './ProjectContext';
 import { RunTimeline } from './RunTimeline';
 
@@ -65,6 +66,7 @@ export function TaskDrawer({ task, onClose }: { task: Task; onClose: () => void 
   const BASE = useBasePath();
   const router = useRouter();
   const { selectedProjectId: projectId } = useProject();
+  const { settings } = useSettings();
 
   const [title, setTitle] = useState(task.title);
   const [bodyMd, setBodyMd] = useState(task.bodyMd);
@@ -284,7 +286,7 @@ export function TaskDrawer({ task, onClose }: { task: Task; onClose: () => void 
           project_id: projectId,
           task_id: task.id,
           thread_id: tid,
-          model_profile: 'balanced',
+          model_profile: settings.modelProfile || 'balanced',
           kind,
           parent_run_id: parentRunId ?? null
         })

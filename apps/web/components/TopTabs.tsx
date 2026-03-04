@@ -2,18 +2,20 @@
 
 import { useEffect, useState } from 'react';
 
-type TabKey = 'chat' | 'kanban' | 'runs';
+type TabKey = 'chat' | 'kanban' | 'runs' | 'settings';
 
 export function TopTabs({
   initial = 'chat',
   chat,
   kanban,
-  runs
+  runs,
+  settings
 }: {
   initial?: TabKey;
   chat: React.ReactNode;
   kanban: React.ReactNode;
   runs: React.ReactNode;
+  settings: React.ReactNode;
 }) {
   const [tab, setTab] = useState<TabKey>(initial);
 
@@ -60,11 +62,23 @@ export function TopTabs({
           >
             Runs
           </button>
+          <button
+            onClick={() => setTab('settings')}
+            className={
+              tab === 'settings'
+                ? 'rounded-lg bg-matrix-500/15 px-3 py-2 text-sm text-matrix-100 ring-1 ring-matrix-500/40'
+                : 'rounded-lg px-3 py-2 text-sm text-zinc-300 hover:text-zinc-100'
+            }
+          >
+            Settings
+          </button>
         </div>
       </header>
 
       <section className="flex-1 rounded-2xl border border-matrix-500/20 bg-bg-2/40 shadow-neon backdrop-blur">
-        <div className="h-full p-4 md:p-6">{tab === 'chat' ? chat : tab === 'kanban' ? kanban : runs}</div>
+        <div className="h-full p-4 md:p-6">
+          {tab === 'chat' ? chat : tab === 'kanban' ? kanban : tab === 'runs' ? runs : settings}
+        </div>
       </section>
     </div>
   );

@@ -2,11 +2,11 @@ import { AppShell } from '../components/AppShell';
 import { ProjectProvider } from '../components/ProjectContext';
 import { TopTabs } from '../components/TopTabs';
 import { ChatPanel } from '../components/ChatPanel';
-import { HealthPanel } from '../components/HealthPanel';
 import { KanbanPanel } from '../components/KanbanPanel';
 import { RunsPanel } from '../components/RunsPanel';
+import { SettingsPanel } from '../components/SettingsPanel';
 
-type TabKey = 'chat' | 'kanban' | 'runs';
+type TabKey = 'chat' | 'kanban' | 'runs' | 'settings';
 
 export default async function HomePage({
   searchParams
@@ -15,12 +15,19 @@ export default async function HomePage({
 }) {
   const sp = await searchParams;
   const tab = (sp.tab ?? '').toLowerCase();
-  const initial: TabKey = tab === 'runs' ? 'runs' : tab === 'kanban' ? 'kanban' : 'chat';
+  const initial: TabKey =
+    tab === 'runs' ? 'runs' : tab === 'kanban' ? 'kanban' : tab === 'settings' ? 'settings' : 'chat';
 
   return (
     <ProjectProvider>
       <AppShell>
-        <TopTabs initial={initial} chat={<ChatPanel />} kanban={<KanbanPanel />} runs={<RunsPanel />} />
+        <TopTabs
+          initial={initial}
+          chat={<ChatPanel />}
+          kanban={<KanbanPanel />}
+          runs={<RunsPanel />}
+          settings={<SettingsPanel />}
+        />
       </AppShell>
     </ProjectProvider>
   );

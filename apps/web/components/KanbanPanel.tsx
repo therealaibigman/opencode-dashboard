@@ -19,6 +19,7 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 
 import { useBasePath } from './useBasePath';
+import { useSettings } from './useSettings';
 import { useProject } from './ProjectContext';
 import { TaskDrawer } from './TaskDrawer';
 
@@ -211,6 +212,7 @@ export function KanbanPanel() {
   const BASE = useBasePath();
   const router = useRouter();
   const { selectedProjectId: projectId } = useProject();
+  const { settings } = useSettings();
 
   const [tasks, setTasks] = useState<Task[]>([]);
   const [archived, setArchived] = useState<Task[]>([]);
@@ -361,7 +363,7 @@ export function KanbanPanel() {
       const res = await fetch(api.runs, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ project_id: projectId, task_id: t.id, model_profile: 'balanced' })
+        body: JSON.stringify({ project_id: projectId, task_id: t.id, model_profile: settings.modelProfile || 'balanced' })
       });
       const data = await j<{ run: { id: string } }>(res);
       router.push(`/runs/${encodeURIComponent(data.run.id)}`);

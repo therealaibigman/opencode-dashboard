@@ -3,6 +3,7 @@
 import { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useBasePath } from './useBasePath';
+import { useSettings } from './useSettings';
 import { useProject } from './ProjectContext';
 import { EventFeed } from './EventFeed';
 
@@ -15,6 +16,7 @@ export function ChatPanel() {
   const BASE = useBasePath();
   const router = useRouter();
   const { selectedProjectId: projectId } = useProject();
+  const { settings } = useSettings();
 
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
@@ -74,7 +76,7 @@ export function ChatPanel() {
         project_id: projectId,
         task_id: taskId ?? null,
         thread_id: threadId ?? null,
-        model_profile: 'balanced',
+        model_profile: settings.modelProfile || 'balanced',
         kind
       })
     });

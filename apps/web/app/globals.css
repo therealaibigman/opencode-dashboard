@@ -6,19 +6,35 @@
   color-scheme: dark;
 }
 
+html.light {
+  color-scheme: light;
+}
+
 html,
 body {
   height: 100%;
 }
 
-body {
-  /* Smooth, non-repeating background */
+/* Dark theme */
+html.dark body {
   background-color: #05070a;
   background-image:
     radial-gradient(1400px 900px at 18% 12%, rgba(0, 230, 58, 0.08), transparent 62%),
     radial-gradient(1100px 700px at 82% 28%, rgba(0, 230, 58, 0.06), transparent 58%),
     radial-gradient(900px 600px at 55% 85%, rgba(0, 230, 58, 0.04), transparent 60%),
     linear-gradient(180deg, #040608 0%, #05070a 100%);
+  background-repeat: no-repeat;
+  background-size: cover;
+  background-attachment: fixed;
+}
+
+/* Light theme */
+html.light body {
+  background-color: #f7f8fb;
+  background-image:
+    radial-gradient(1200px 800px at 18% 12%, rgba(0, 230, 58, 0.08), transparent 62%),
+    radial-gradient(1100px 700px at 82% 28%, rgba(0, 230, 58, 0.06), transparent 58%),
+    linear-gradient(180deg, #ffffff 0%, #f7f8fb 100%);
   background-repeat: no-repeat;
   background-size: cover;
   background-attachment: fixed;
@@ -39,9 +55,9 @@ body::before {
   background-size: 100% 3px;
   background-repeat: repeat;
   mix-blend-mode: multiply;
-  opacity: 0.30;
+  opacity: 0.55;
 }
 
-::selection {
-  background: rgba(0, 230, 58, 0.25);
+html.light body::before {
+  opacity: 0.18;
 }

@@ -18,6 +18,7 @@
     "@ocdash/shared": "file:../../packages/shared",
     "drizzle-orm": "^0.44.0",
     "next": "15.2.1",
+    "next-themes": "^0.4.6",
     "pg": "^8.13.1",
     "react": "19.0.0",
     "react-dom": "19.0.0"
