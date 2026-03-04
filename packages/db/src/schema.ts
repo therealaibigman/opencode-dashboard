@@ -78,6 +78,9 @@ export const runs = pgTable(
       .references(() => projects.id, { onDelete: 'cascade' }),
     taskId: text('task_id').references(() => tasks.id, { onDelete: 'set null' }),
 
+    // For plan → execute linking.
+    parentRunId: text('parent_run_id'),
+
     kind: runKindEnum('kind').notNull().default('execute'),
 
     status: runStatusEnum('status').notNull().default('queued'),
@@ -89,7 +92,8 @@ export const runs = pgTable(
   (r) => ({
     projectIdx: index('runs_project_idx').on(r.projectId),
     statusIdx: index('runs_status_idx').on(r.status),
-    kindIdx: index('runs_kind_idx').on(r.kind)
+    kindIdx: index('runs_kind_idx').on(r.kind),
+    parentIdx: index('runs_parent_idx').on(r.parentRunId)
   })
 );
 

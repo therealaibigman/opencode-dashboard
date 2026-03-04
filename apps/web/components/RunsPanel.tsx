@@ -9,6 +9,8 @@ type RunRow = {
   id: string;
   projectId: string;
   taskId: string | null;
+  parentRunId: string | null;
+  kind: 'execute' | 'plan';
   status: string;
   modelProfile: string;
   createdAt: string;
@@ -34,6 +36,53 @@ function pill(status: string) {
   if (status === 'running') return 'bg-blue-500/15 text-blue-100 ring-blue-500/30';
   if (status === 'queued') return 'bg-zinc-500/15 text-zinc-100 ring-zinc-500/30';
   return 'bg-black/20 text-zinc-200 ring-matrix-500/15';
+}
+
+function kindPill(kind: string) {
+  if (kind === 'plan') return 'bg-yellow-500/10 text-yellow-100 ring-yellow-500/25';
+  return 'bg-black/20 text-zinc-200 ring-matrix-500/15';
+}
+
+function RunButton({
+  r,
+  onOpen,
+  indent
+}: {
+  r: RunRow;
+  onOpen: () => void;
+  indent?: boolean;
+}) {
+  return (
+    <button
+      onClick={onOpen}
+      className={
+        indent
+          ? 'block w-full min-w-0 rounded-xl border border-matrix-500/10 bg-black/20 p-3 pl-6 text-left hover:bg-black/30'
+          : 'block w-full min-w-0 rounded-xl border border-matrix-500/10 bg-black/25 p-3 text-left hover:bg-black/35'
+      }
+    >
+      <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0 break-all text-sm font-medium text-zinc-100">{r.id}</div>
+        <div className="flex items-center gap-2">
+          <span className={`rounded-full px-2 py-1 text-[11px] ring-1 ${kindPill(r.kind)}`}>{r.kind}</span>
+          <span className={`rounded-full px-2 py-1 text-[11px] ring-1 ${pill(r.status)}`}>{r.status}</span>
+        </div>
+      </div>
+
+      <div className="mt-2 grid gap-1 text-[11px] text-zinc-400 md:grid-cols-3">
+        <div className="min-w-0 break-all">task: {r.taskId ?? '—'}</div>
+        <div>created: {fmtTs(r.createdAt)}</div>
+        <div>
+          {r.startedAt ? `start: ${fmtTs(r.startedAt)}` : 'start: —'}
+          {r.finishedAt ? ` • end: ${fmtTs(r.finishedAt)}` : ''}
+        </div>
+      </div>
+
+      {indent && r.parentRunId ? (
+        <div className="mt-1 text-[10px] text-zinc-500">from plan: {r.parentRunId}</div>
+      ) : null}
+    </button>
+  );
 }
 
 export function RunsPanel() {
@@ -70,6 +119,18 @@ export function RunsPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [api.runs]);
 
+  const childrenByParent = new Map<string, RunRow[]>();
+  for (const r of runs) {
+    if (r.parentRunId) {
+      const arr = childrenByParent.get(r.parentRunId) ?? [];
+      arr.push(r);
+      childrenByParent.set(r.parentRunId, arr);
+    }
+  }
+
+  // display order: plans + top-level executes, then children directly under plan.
+  const topLevel = runs.filter((r) => !r.parentRunId);
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
@@ -100,27 +161,26 @@ export function RunsPanel() {
         {runs.length === 0 && !loading ? <div className="text-[11px] text-zinc-400">No runs yet.</div> : null}
 
         <div className="space-y-2">
-          {runs.map((r) => (
-            <button
-              key={r.id}
-              onClick={() => router.push(`/runs/${encodeURIComponent(r.id)}`)}
-              className="block w-full min-w-0 rounded-xl border border-matrix-500/10 bg-black/25 p-3 text-left hover:bg-black/35"
-            >
-              <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
-                <div className="min-w-0 break-all text-sm font-medium text-zinc-100">{r.id}</div>
-                <span className={`rounded-full px-2 py-1 text-[11px] ring-1 ${pill(r.status)}`}>{r.status}</span>
+          {topLevel.map((r) => {
+            const kids = childrenByParent.get(r.id) ?? [];
+            return (
+              <div key={r.id} className="space-y-2">
+                <RunButton r={r} onOpen={() => router.push(`/runs/${encodeURIComponent(r.id)}`)} />
+                {kids.length ? (
+                  <div className="space-y-2">
+                    {kids.map((k) => (
+                      <RunButton
+                        key={k.id}
+                        r={k}
+                        indent
+                        onOpen={() => router.push(`/runs/${encodeURIComponent(k.id)}`)}
+                      />
+                    ))}
+                  </div>
+                ) : null}
               </div>
-
-              <div className="mt-2 grid gap-1 text-[11px] text-zinc-400 md:grid-cols-3">
-                <div className="min-w-0 break-all">task: {r.taskId ?? '—'}</div>
-                <div>created: {fmtTs(r.createdAt)}</div>
-                <div>
-                  {r.startedAt ? `start: ${fmtTs(r.startedAt)}` : 'start: —'}
-                  {r.finishedAt ? ` • end: ${fmtTs(r.finishedAt)}` : ''}
-                </div>
-              </div>
-            </button>
-          ))}
+            );
+          })}
         </div>
       </div>
 

@@ -46,6 +46,7 @@ export async function POST(_req: Request, { params }: { params: Promise<{ runId:
       id: execId,
       projectId: r.projectId,
       taskId: r.taskId,
+      parentRunId: rid,
       modelProfile: r.modelProfile,
       kind: 'execute',
       status: 'queued'
@@ -80,7 +81,10 @@ export async function POST(_req: Request, { params }: { params: Promise<{ runId:
       taskId: r.taskId ?? null,
       runId: execId,
       type: 'run.created',
-      payload: { run: { id: execId, project_id: r.projectId, task_id: r.taskId, kind: 'execute' }, from_plan_run: rid }
+      payload: {
+        run: { id: execId, project_id: r.projectId, task_id: r.taskId, kind: 'execute', parent_run_id: rid },
+        from_plan_run: rid
+      }
     });
 
     await db.update(runs).set({ status: 'succeeded', finishedAt: new Date() }).where(eq(runs.id, rid));
