@@ -6,13 +6,11 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { makeDb } from '@ocdash/db/client';
 import { artifacts, events, runs, tasks } from '@ocdash/db/schema';
-import { newId } from '@ocdash/shared';
+import { newId, extractUnifiedDiffFromText, wrapHunkAsFilePatch, policyCheckCommand, policyCheckPath } from '@ocdash/shared';
 import type { OcdashEvent } from '@ocdash/shared';
 import { requireEnv } from './env.js';
 import { ensureProjectWorkspace } from './workspaces.js';
 import { opencodeRun } from './opencode.js';
-import { extractUnifiedDiffFromText, wrapHunkAsFilePatch } from './patch.js';
-import { policyCheckCommand, policyCheckPath } from './policy.js';
 
 const DATABASE_URL = requireEnv('DATABASE_URL');
 const POLL_MS = Number(process.env.WORKER_POLL_INTERVAL_MS ?? '750');
@@ -414,7 +412,6 @@ async function processRun(db: any, runId: string) {
   }
 
   if (patch) {
-    // If OpenCode produced a bare hunk (no file headers), try to wrap it for README.md.
     const normalizedPatchText =
       !patch.hasGitHeaders && patch.patchText.trimStart().startsWith('@@')
         ? wrapHunkAsFilePatch({ patchText: patch.patchText, filePath: 'README.md' })
@@ -438,8 +435,6 @@ async function processRun(db: any, runId: string) {
         });
         return;
       }
-
-      // Treat as no patch.
     } else {
       const patchArtifactId = await writeArtifact({
         db,
@@ -505,8 +500,6 @@ async function processRun(db: any, runId: string) {
           return;
         }
       }
-
-      // If we ever re-enable auto-apply here, do it only for safe repos.
     }
   }
 
