@@ -44,13 +44,21 @@ export function policyCheckCommand(cmd: string): PolicyDecision {
 
   // allowlist (tight)
   const allow = [
+    /^git\s+init$/,
+    /^git\s+config\s+user\.email\s+.+$/,
+    /^git\s+config\s+user\.name\s+.+$/,
+    /^git\s+apply(\s+.*)?$/,
+    /^git\s+add\s+-A$/,
+    /^git\s+commit\s+-m\s+.+$/,
     /^git\s+status(\s+.*)?$/,
     /^git\s+diff(\s+.*)?$/,
     /^git\s+log\s+-n\s+\d+$/,
     /^npm\s+test$/,
     /^npm\s+run\s+lint$/,
     /^npm\s+run\s+typecheck$/,
-    /^npm\s+run\s+build$/
+    /^npm\s+run\s+build$/,
+    // fallback patch apply (fuzzier than git apply)
+    /^patch\s+-p1(\s+.*)?$/
   ];
 
   if (!allow.some((re) => re.test(s))) {

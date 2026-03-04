@@ -163,6 +163,30 @@ async function ensureReadme(ws: string) {
   }
 }
 
+async function applyPatchWithFallback({
+  ws,
+  patchText
+}: {
+  ws: string;
+  patchText: string;
+}): Promise<{ ok: boolean; method: 'git-apply' | 'patch'; stdout: string; stderr: string }> {
+  const patchFile = await writeTempPatch({ dir: ws, patchText });
+
+  const git = await runCmd({ cwd: ws, cmd: `git apply ${patchFile}` });
+  if (git.exitCode === 0) return { ok: true, method: 'git-apply', stdout: git.stdout, stderr: git.stderr };
+
+  // fallback to GNU patch (fuzz/offset)
+  const p = await runCmd({ cwd: ws, cmd: `patch -p1 --forward --batch -i ${patchFile}` });
+  if (p.exitCode === 0) return { ok: true, method: 'patch', stdout: p.stdout, stderr: p.stderr };
+
+  return {
+    ok: false,
+    method: 'git-apply',
+    stdout: `${git.stdout}\n---\n[fallback patch stdout]\n${p.stdout}`,
+    stderr: `${git.stderr}\n---\n[fallback patch stderr]\n${p.stderr}`
+  };
+}
+
 async function processRun(db: any, runId: string) {
   const runRows = await db.select().from(runs).where(eq(runs.id, runId)).limit(1);
   const runRow = runRows[0];
@@ -466,11 +490,9 @@ async function processRun(db: any, runId: string) {
       }
     }
 
-    // apply patch
-    const patchFile = await writeTempPatch({ dir: ws, patchText: normalizedPatchText });
-    const applyRes = await runCmd({ cwd: ws, cmd: `git apply ${patchFile}` });
-
-    if (applyRes.exitCode !== 0) {
+    // apply patch (with fallback)
+    const applied = await applyPatchWithFallback({ ws, patchText: normalizedPatchText });
+    if (!applied.ok) {
       await db.update(runs).set({ status: 'failed', finishedAt: new Date() }).where(eq(runs.id, runId));
       return;
     }

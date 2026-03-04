@@ -50,7 +50,8 @@ function policyAllowCommand(cmd: string): { ok: true } | { ok: false; reason: st
     /^npm\s+test$/,
     /^npm\s+run\s+lint$/,
     /^npm\s+run\s+typecheck$/,
-    /^npm\s+run\s+build$/
+    /^npm\s+run\s+build$/,
+    /^patch\s+-p1\b.*$/
   ];
   if (!allow.some((re) => re.test(s))) return { ok: false, reason: 'command not on allowlist' };
   return { ok: true };
@@ -198,9 +199,19 @@ export async function POST(_req: Request, { params }: { params: Promise<{ runId:
     const patchFile = path.join(ws, `.ocdash_manual_${Date.now()}.diff`);
     await fs.writeFile(patchFile, patchText, 'utf8');
 
-    const applyRes = await runCmd(ws, `git apply ${patchFile}`);
-    const applyOutId = await writeArtifact({ db, projectId: r.projectId, runId: rid, stepId, kind: 'stdout', name: 'git apply stdout', content: applyRes.stdout });
-    const applyErrId = await writeArtifact({ db, projectId: r.projectId, runId: rid, stepId, kind: 'stderr', name: 'git apply stderr', content: applyRes.stderr });
+    let applyRes = await runCmd(ws, `git apply ${patchFile}`);
+    if (applyRes.exitCode !== 0) {
+      // fallback to GNU patch (fuzz/offset)
+      const p = await runCmd(ws, `patch -p1 --forward --batch -i ${patchFile}`);
+      applyRes = {
+        exitCode: p.exitCode,
+        stdout: `${applyRes.stdout}\n---\n[fallback patch stdout]\n${p.stdout}`,
+        stderr: `${applyRes.stderr}\n---\n[fallback patch stderr]\n${p.stderr}`
+      };
+    }
+
+    const applyOutId = await writeArtifact({ db, projectId: r.projectId, runId: rid, stepId, kind: 'stdout', name: 'apply patch stdout', content: applyRes.stdout });
+    const applyErrId = await writeArtifact({ db, projectId: r.projectId, runId: rid, stepId, kind: 'stderr', name: 'apply patch stderr', content: applyRes.stderr });
 
     await appendProjectEvent({
       databaseUrl: url,
@@ -214,7 +225,7 @@ export async function POST(_req: Request, { params }: { params: Promise<{ runId:
 
     if (applyRes.exitCode !== 0) {
       await db.update(runs).set({ status: 'failed', finishedAt: new Date() }).where(eq(runs.id, rid));
-      return NextResponse.json({ ok: false, error: 'git apply failed' }, { status: 500 });
+      return NextResponse.json({ ok: false, error: 'apply patch failed', stderr_artifact_id: applyErrId }, { status: 500 });
     }
 
     // checks
