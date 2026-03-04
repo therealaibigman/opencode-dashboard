@@ -24,11 +24,6 @@ const POLL_MS = Number(process.env.WORKER_POLL_INTERVAL_MS ?? '750');
 const WORKSPACES_ROOT =
   process.env.PROJECT_WORKSPACES_ROOT ?? '/home/exedev/.openclaw/workspace/opencode-workspaces';
 
-const AUTO_COMMANDS = (process.env.OC_DASH_AUTO_COMMANDS ?? 'npm test,npm run lint,npm run typecheck')
-  .split(',')
-  .map((s) => s.trim())
-  .filter(Boolean);
-
 const REQUIRE_APPROVAL = String(process.env.OC_DASH_REQUIRE_APPROVAL ?? '') === '1';
 
 function nowIso() {
@@ -155,7 +150,6 @@ async function ensureGitRepo(ws: string) {
     await runCmd({ cwd: ws, cmd: 'git init' });
   }
 
-  // Ensure git identity (local to repo)
   await runCmd({ cwd: ws, cmd: 'git config user.email ocdash@local' });
   await runCmd({ cwd: ws, cmd: 'git config user.name ocdash' });
 }
@@ -172,13 +166,12 @@ async function processRun(db: any, runId: string) {
   const runRow = runRows[0];
   const projectId = runRow?.projectId as string | undefined;
   const taskId = (runRow?.taskId as string | null | undefined) ?? null;
+  const kind = (runRow as any)?.kind ?? 'execute';
 
   if (!projectId) throw new Error(`Run ${runId} missing projectId`);
 
-  // If someone cancelled it while queued, skip.
   if (runRow?.status === 'cancelled') return;
 
-  // Load project config (local_path/repo_url/etc)
   const projRows = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
   const proj = projRows[0];
 
@@ -209,7 +202,7 @@ async function processRun(db: any, runId: string) {
     project_id: projectId,
     task_id: taskId ?? undefined,
     run_id: runId,
-    payload: { message: 'Run started' }
+    payload: { message: 'Run started', kind }
   });
 
   const stepId = 'stp_opencode_run';
@@ -263,9 +256,12 @@ async function processRun(db: any, runId: string) {
   await ensureGitRepo(ws);
   await ensureReadme(ws);
 
-  const msg = taskId
-    ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}\n\nReturn a unified diff in a fenced \`\`\`diff block if code changes are needed. Include full diff headers (diff --git, ---/+++).\n\nDo the next best action.`
-    : `Project ${projectId}: Do the next best action.`;
+  const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Project ${projectId}`;
+
+  const msg =
+    kind === 'plan'
+      ? `${baseTask}\n\nYou are planning work. Output a plan as JSON inside a fenced \`\`\`json block with:\n{\n  \"summary\": string,\n  \"steps\": [{\"title\": string, \"details\": string, \"risk\": \"low\"|\"med\"|\"high\"}],\n  \"files\": string[],\n  \"commands\": string[]\n}\n\nDo NOT output a diff. Do NOT execute anything.\n`
+      : `${baseTask}\n\nReturn a unified diff in a fenced \`\`\`diff block if code changes are needed. Include full diff headers (diff --git, ---/+++).\n\nDo the next best action.`;
 
   const model = (process.env.OPENCODE_MODEL ?? '').trim() || undefined;
   const timeoutMs = Number(process.env.OPENCODE_TIMEOUT_MS ?? '600000');
@@ -287,12 +283,12 @@ async function processRun(db: any, runId: string) {
         cwd: ws,
         message: taskId ? taskTitle : '(no task)',
         model: model ?? null,
-        timeout_ms: timeoutMs
+        timeout_ms: timeoutMs,
+        kind
       }
     }
   });
 
-  // Cancellation watchdog: poll DB while tool runs.
   const controller = new AbortController();
   let cancelled = false;
   const cancelTimer = setInterval(() => {
@@ -308,7 +304,6 @@ async function processRun(db: any, runId: string) {
     })();
   }, 1000);
 
-  // live progress → run.step.progress (rate-limited)
   let lastProgressAt = 0;
   let tail = '';
   const maybeEmitProgress = async () => {
@@ -363,7 +358,6 @@ async function processRun(db: any, runId: string) {
 
   if (!cancelled) await maybeEmitProgress();
 
-  // Store full logs as artifacts
   const stdoutId = await writeArtifact({
     db,
     projectId,
@@ -384,7 +378,6 @@ async function processRun(db: any, runId: string) {
     content: result.stderr ?? ''
   });
 
-  // Emit artifact.created events
   await appendEventRow(db, {
     id: newId('evt'),
     ts: nowIso(),
@@ -431,7 +424,68 @@ async function processRun(db: any, runId: string) {
     return;
   }
 
-  // Approval gate: try to extract a diff and store it. Only request approval when patch exists.
+  if (kind === 'plan') {
+    // Extract JSON plan block.
+    const m = (result.stdout ?? '').match(/```json\s*([\s\S]*?)```/m);
+    const planText = m?.[1]?.trim() ?? '';
+    if (planText) {
+      const planArtifactId = await writeArtifact({
+        db,
+        projectId,
+        runId,
+        stepId,
+        kind: 'plan',
+        name: 'proposed plan',
+        content: planText + '\n'
+      });
+
+      await appendEventRow(db, {
+        id: newId('evt'),
+        ts: nowIso(),
+        seq: seq++,
+        type: 'artifact.created',
+        source: 'worker',
+        severity: 'info',
+        project_id: projectId,
+        task_id: taskId ?? undefined,
+        run_id: runId,
+        step_id: stepId,
+        payload: { artifact: { id: planArtifactId, kind: 'plan', name: 'proposed plan' } }
+      });
+
+      await db.update(runs).set({ status: 'needs_approval' }).where(eq(runs.id, runId));
+      await appendEventRow(db, {
+        id: newId('evt'),
+        ts: nowIso(),
+        seq: seq++,
+        type: 'approval.requested',
+        source: 'worker',
+        severity: 'warn',
+        project_id: projectId,
+        task_id: taskId ?? undefined,
+        run_id: runId,
+        payload: { reason: 'plan approval required', plan_artifact_id: planArtifactId }
+      });
+      return;
+    }
+
+    await db.update(runs).set({ status: 'failed', finishedAt: new Date() }).where(eq(runs.id, runId));
+    await appendEventRow(db, {
+      id: newId('evt'),
+      ts: nowIso(),
+      seq: seq++,
+      type: 'run.failed',
+      source: 'worker',
+      severity: 'error',
+      project_id: projectId,
+      task_id: taskId ?? undefined,
+      run_id: runId,
+      payload: { message: 'Plan run failed: no json block produced' }
+    });
+    return;
+  }
+
+  // execute kind (existing approval gate)
   const patch = extractUnifiedDiffFromText(result.stdout ?? '');
 
   if (REQUIRE_APPROVAL && !patch) {

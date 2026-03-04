@@ -28,15 +28,32 @@ export function ChatPanel() {
     [BASE]
   );
 
-  async function queueRunForTask(taskId?: string) {
+  async function createTask() {
+    const res = await fetch(api.tasks, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        project_id: projectId,
+        title: title || 'Untitled task',
+        body_md: body,
+        status: 'inbox'
+      })
+    });
+    const data = await j<{ task: { id: string } }>(res);
+    setLog((p) => [`Created task ${data.task.id}`, ...p]);
+    return data.task.id;
+  }
+
+  async function queueRun({ taskId, kind }: { taskId?: string; kind: 'execute' | 'plan' }) {
     const res = await fetch(api.runs, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ project_id: projectId, task_id: taskId ?? null, model_profile: 'balanced' })
+      body: JSON.stringify({ project_id: projectId, task_id: taskId ?? null, model_profile: 'balanced', kind })
     });
     const data = await j<{ run: { id: string } }>(res);
-    setLog((p) => [`Queued run ${data.run.id} (task: ${taskId ?? 'none'})`, ...p]);
+    setLog((p) => [`Queued ${kind} run ${data.run.id} (task: ${taskId ?? 'none'})`, ...p]);
     router.push(`/runs/${encodeURIComponent(data.run.id)}`);
+    return data.run.id;
   }
 
   return (
@@ -49,7 +66,7 @@ export function ChatPanel() {
         <div className="space-y-3">
           <div className="grid gap-3">
             <div className="space-y-2">
-              <div className="text-xs text-zinc-300">Message / Task title</div>
+              <div className="text-xs text-zinc-300">Feature idea / Task title</div>
               <input
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
@@ -58,7 +75,7 @@ export function ChatPanel() {
               />
             </div>
             <div className="space-y-2">
-              <div className="text-xs text-zinc-300">Details (optional)</div>
+              <div className="text-xs text-zinc-300">Details / acceptance criteria (optional)</div>
               <input
                 value={body}
                 onChange={(e) => setBody(e.target.value)}
@@ -71,18 +88,7 @@ export function ChatPanel() {
           <div className="flex flex-wrap gap-2">
             <button
               onClick={async () => {
-                const res = await fetch(api.tasks, {
-                  method: 'POST',
-                  headers: { 'content-type': 'application/json' },
-                  body: JSON.stringify({
-                    project_id: projectId,
-                    title: title || 'Untitled task',
-                    body_md: body,
-                    status: 'inbox'
-                  })
-                });
-                const data = await j<{ task: { id: string } }>(res);
-                setLog((p) => [`Created task ${data.task.id}`, ...p]);
+                await createTask();
                 setTitle('');
                 setBody('');
               }}
@@ -90,33 +96,36 @@ export function ChatPanel() {
             >
               Create Task
             </button>
+
             <button
               onClick={async () => {
-                const res = await fetch(api.tasks, {
-                  method: 'POST',
-                  headers: { 'content-type': 'application/json' },
-                  body: JSON.stringify({
-                    project_id: projectId,
-                    title: title || 'Untitled task',
-                    body_md: body,
-                    status: 'inbox'
-                  })
-                });
-                const data = await j<{ task: { id: string } }>(res);
-                setLog((p) => [`Created task ${data.task.id}`, ...p]);
+                const taskId = await createTask();
                 setTitle('');
                 setBody('');
-                await queueRunForTask(data.task.id);
+                await queueRun({ taskId, kind: 'plan' });
+              }}
+              className="rounded-lg bg-blue-500/20 px-3 py-2 text-sm font-medium text-blue-50 ring-1 ring-blue-500/40 hover:bg-blue-500/25"
+            >
+              Plan
+            </button>
+
+            <button
+              onClick={async () => {
+                const taskId = await createTask();
+                setTitle('');
+                setBody('');
+                await queueRun({ taskId, kind: 'execute' });
               }}
               className="rounded-lg bg-matrix-500/25 px-3 py-2 text-sm font-medium text-matrix-50 ring-1 ring-matrix-500/50 hover:bg-matrix-500/30"
             >
-              Create + Queue Run
+              Execute
             </button>
+
             <button
-              onClick={async () => queueRunForTask(undefined)}
+              onClick={async () => queueRun({ kind: 'plan' })}
               className="rounded-lg bg-black/25 px-3 py-2 text-sm text-zinc-200 ring-1 ring-matrix-500/20 hover:bg-black/35"
             >
-              Queue Run (no task)
+              Plan (no task)
             </button>
           </div>
 

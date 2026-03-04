@@ -11,6 +11,7 @@ type RunRow = {
   taskId: string | null;
   status: string;
   modelProfile: string;
+  kind: 'execute' | 'plan';
   startedAt: string | null;
   finishedAt: string | null;
   createdAt: string;
@@ -57,6 +58,8 @@ export function RunDetails({ runId }: { runId: string }) {
       cancel: `${BASE}/api/runs/${encodeURIComponent(runId)}/cancel`,
       approve: `${BASE}/api/runs/${encodeURIComponent(runId)}/approve`,
       reject: `${BASE}/api/runs/${encodeURIComponent(runId)}/reject`,
+      approvePlan: `${BASE}/api/runs/${encodeURIComponent(runId)}/approve-plan`,
+      rejectPlan: `${BASE}/api/runs/${encodeURIComponent(runId)}/reject-plan`,
       artifacts: `${BASE}/api/runs/${encodeURIComponent(runId)}/artifacts`,
       artifact: (id: string) => `${BASE}/api/artifacts/${encodeURIComponent(id)}`,
       eventsStream: `${BASE}/api/runs/${encodeURIComponent(runId)}/events/stream`
@@ -115,8 +118,26 @@ export function RunDetails({ runId }: { runId: string }) {
     }
   }
 
-  async function approveRun() {
+  async function approve() {
     if (run?.status !== 'needs_approval') return;
+
+    if (run.kind === 'plan') {
+      const ok = window.confirm(`Approve plan for run ${runId}?\n\nThis will queue an execute run.`);
+      if (!ok) return;
+
+      setErr(null);
+      setApproving(true);
+      try {
+        const data = await j<{ ok: boolean; execute_run_id: string }>(await fetch(api.approvePlan, { method: 'POST' }));
+        // jump straight to the execution run
+        window.location.href = `/runs/${encodeURIComponent(data.execute_run_id)}`;
+      } catch (e: any) {
+        setErr(String(e?.message ?? e));
+      } finally {
+        setApproving(false);
+      }
+      return;
+    }
 
     const ok = window.confirm(
       `Approve and apply changes for run ${runId}?\n\nThis will apply the patch, run checks, and commit automatically.`
@@ -135,7 +156,7 @@ export function RunDetails({ runId }: { runId: string }) {
     }
   }
 
-  async function rejectRun() {
+  async function reject() {
     if (run?.status !== 'needs_approval') return;
 
     const ok = window.confirm(`Reject changes for run ${runId}?`);
@@ -144,13 +165,23 @@ export function RunDetails({ runId }: { runId: string }) {
     setErr(null);
     setRejecting(true);
     try {
-      await j(
-        await fetch(api.reject, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ reason: 'Rejected in UI' })
-        })
-      );
+      if (run.kind === 'plan') {
+        await j(
+          await fetch(api.rejectPlan, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ reason: 'Rejected in UI' })
+          })
+        );
+      } else {
+        await j(
+          await fetch(api.reject, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ reason: 'Rejected in UI' })
+          })
+        );
+      }
       await refresh();
     } catch (e: any) {
       setErr(String(e?.message ?? e));
@@ -164,13 +195,11 @@ export function RunDetails({ runId }: { runId: string }) {
     setOpenArtifact(data.artifact);
   }
 
-  // initial load
   useEffect(() => {
     refresh().catch(() => void 0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [api.run, api.artifacts]);
 
-  // keep artifacts fresh while the run is active
   useEffect(() => {
     stopRef.current = false;
     if (!isActive(run?.status)) return;
@@ -188,7 +217,6 @@ export function RunDetails({ runId }: { runId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [run?.status, api.artifacts, api.run]);
 
-  // refresh artifacts immediately on artifact.created events (SSE)
   useEffect(() => {
     stopRef.current = false;
     const es = new EventSource(api.eventsStream);
@@ -198,10 +226,6 @@ export function RunDetails({ runId }: { runId: string }) {
     };
 
     es.addEventListener('artifact.created', onArtifact);
-    es.onopen = () => void 0;
-    es.onerror = () => {
-      // ignore; RunTimeline already has polling fallback.
-    };
 
     return () => {
       stopRef.current = true;
@@ -238,7 +262,6 @@ export function RunDetails({ runId }: { runId: string }) {
             onClick={() => cancelRun()}
             disabled={cancelling || !canCancel(run?.status) || approving || rejecting}
             className="rounded-lg bg-red-500/10 px-3 py-2 text-sm text-red-100 ring-1 ring-red-500/30 hover:bg-red-500/15 disabled:opacity-60"
-            title={canCancel(run?.status) ? 'Cancel this run' : 'Can only cancel queued/running runs'}
           >
             {cancelling ? 'Cancelling…' : 'Cancel'}
           </button>
@@ -249,18 +272,20 @@ export function RunDetails({ runId }: { runId: string }) {
         <div className="rounded-xl border border-yellow-500/30 bg-yellow-950/20 p-3">
           <div className="mb-2 text-sm font-medium text-yellow-100">Approval required</div>
           <div className="mb-3 text-xs text-yellow-100/80">
-            This run generated a patch but policy blocked auto-apply. You can approve to apply the patch, run checks, and commit.
+            {run.kind === 'plan'
+              ? 'This run produced a plan. Approve to queue an execute run.'
+              : 'This run generated a patch but policy blocked auto-apply. You can approve to apply the patch, run checks, and commit.'}
           </div>
           <div className="flex flex-wrap gap-2">
             <button
-              onClick={() => approveRun()}
+              onClick={() => approve()}
               disabled={approving || rejecting}
               className="rounded-lg bg-yellow-500/15 px-3 py-2 text-sm text-yellow-100 ring-1 ring-yellow-500/30 hover:bg-yellow-500/20 disabled:opacity-60"
             >
-              {approving ? 'Approving…' : 'Approve + Apply + Commit'}
+              {approving ? 'Approving…' : run.kind === 'plan' ? 'Approve plan → Execute' : 'Approve + Apply + Commit'}
             </button>
             <button
-              onClick={() => rejectRun()}
+              onClick={() => reject()}
               disabled={approving || rejecting}
               className="rounded-lg bg-black/25 px-3 py-2 text-sm text-zinc-200 ring-1 ring-matrix-500/20 hover:bg-black/35 disabled:opacity-60"
             >
@@ -282,6 +307,9 @@ export function RunDetails({ runId }: { runId: string }) {
 
           {run ? (
             <div className="space-y-2 text-xs text-zinc-200">
+              <div>
+                <span className="text-zinc-400">kind:</span> {run.kind}
+              </div>
               <div>
                 <span className="text-zinc-400">status:</span> {run.status}
               </div>

@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
-import { and, asc, desc, eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
+
 import { makeDb } from '@ocdash/db/client';
 import { runs } from '@ocdash/db/schema';
 import { newId } from '@ocdash/shared';
@@ -11,23 +12,19 @@ export async function GET(req: Request) {
   const url = process.env.DATABASE_URL;
   if (!url) return NextResponse.json({ error: 'DATABASE_URL missing' }, { status: 500 });
 
-  const u = new URL(req.url);
-  const projectId = u.searchParams.get('project_id')?.trim() || null;
-  const taskId = u.searchParams.get('task_id')?.trim() || null;
+  const sp = new URL(req.url).searchParams;
+  const projectId = sp.get('project_id')?.trim();
+  const taskId = sp.get('task_id')?.trim();
+
+  if (!projectId) return NextResponse.json({ error: 'project_id is required' }, { status: 400 });
 
   const { db, pool } = makeDb(url);
   try {
-    const where = [] as any[];
-    if (projectId) where.push(eq(runs.projectId, projectId));
-    if (taskId) where.push(eq(runs.taskId, taskId));
+    const where = taskId
+      ? and(eq(runs.projectId, projectId), eq(runs.taskId, taskId))
+      : eq(runs.projectId, projectId);
 
-    const rows = await db
-      .select()
-      .from(runs)
-      .where(where.length ? and(...where) : undefined)
-      .orderBy(desc(runs.createdAt), asc(runs.id))
-      .limit(200);
-
+    const rows = await db.select().from(runs).where(where).orderBy(desc(runs.createdAt)).limit(200);
     return NextResponse.json({ runs: rows });
   } finally {
     await pool.end();
@@ -43,46 +40,38 @@ export async function POST(req: Request) {
     project_id?: string;
     task_id?: string | null;
     model_profile?: string;
+    kind?: 'execute' | 'plan';
   };
 
   const projectId = (body.project_id ?? '').trim();
   if (!projectId) return NextResponse.json({ error: 'project_id is required' }, { status: 400 });
 
-  const runId = (body.id ?? newId('run')).trim();
-  const modelProfile = (body.model_profile ?? 'balanced').trim();
+  const id = (body.id ?? newId('run')).trim();
   const taskId = body.task_id ?? null;
+  const modelProfile = (body.model_profile ?? 'balanced').trim();
+  const kind = body.kind ?? 'execute';
 
   const { db, pool } = makeDb(url);
   try {
     await db.insert(runs).values({
-      id: runId,
+      id,
       projectId,
       taskId,
-      status: 'queued',
-      modelProfile
+      modelProfile,
+      kind,
+      status: 'queued'
     });
 
     await appendProjectEvent({
       databaseUrl: url,
       projectId,
       taskId,
-      runId,
+      runId: id,
       type: 'run.created',
-      payload: { run: { id: runId, status: 'queued', model_profile: modelProfile, task_id: taskId } }
+      payload: { run: { id, project_id: projectId, task_id: taskId, model_profile: modelProfile, kind } }
     });
 
-    return NextResponse.json(
-      {
-        run: {
-          id: runId,
-          project_id: projectId,
-          task_id: taskId,
-          status: 'queued',
-          model_profile: modelProfile
-        }
-      },
-      { status: 201 }
-    );
+    return NextResponse.json({ run: { id } }, { status: 201 });
   } finally {
     await pool.end();
   }

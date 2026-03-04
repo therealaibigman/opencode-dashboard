@@ -26,18 +26,15 @@ export const runStatusEnum = pgEnum('run_status', [
   'cancelled'
 ]);
 
+export const runKindEnum = pgEnum('run_kind', ['execute', 'plan']);
+
 export const projects = pgTable('projects', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),
 
   // Phase 4: real project sources
-  // If set, the worker will mirror/copy from this local path into the workspace on each run.
   localPath: text('local_path'),
-
-  // If set, the worker will clone/pull this repo URL into the workspace.
   repoUrl: text('repo_url'),
-
-  // Optional branch for repoUrl projects (default: main)
   defaultBranch: text('default_branch'),
 
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
@@ -54,7 +51,6 @@ export const tasks = pgTable(
     bodyMd: text('body_md').notNull().default(''),
     status: taskStatusEnum('status').notNull().default('inbox'),
 
-    // Archive is orthogonal to status.
     archivedAt: timestamp('archived_at', { withTimezone: true }),
 
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -75,6 +71,9 @@ export const runs = pgTable(
       .notNull()
       .references(() => projects.id, { onDelete: 'cascade' }),
     taskId: text('task_id').references(() => tasks.id, { onDelete: 'set null' }),
+
+    kind: runKindEnum('kind').notNull().default('execute'),
+
     status: runStatusEnum('status').notNull().default('queued'),
     modelProfile: text('model_profile').notNull().default('balanced'),
     startedAt: timestamp('started_at', { withTimezone: true }),
@@ -83,7 +82,8 @@ export const runs = pgTable(
   },
   (r) => ({
     projectIdx: index('runs_project_idx').on(r.projectId),
-    statusIdx: index('runs_status_idx').on(r.status)
+    statusIdx: index('runs_status_idx').on(r.status),
+    kindIdx: index('runs_kind_idx').on(r.kind)
   })
 );
 
