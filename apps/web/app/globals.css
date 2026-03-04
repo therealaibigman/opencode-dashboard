@@ -27,7 +27,7 @@ html.light {
   --panel: rgba(255, 255, 255, 0.74);
   --panel-2: rgba(255, 255, 255, 0.86);
   --muted: rgba(24, 24, 27, 0.72);
-  /* darker green ink for all matrix accent text in light mode */
+  /* dark green ink for all matrix accent text in light mode */
   --matrix-ink: rgba(0, 64, 18, 0.95);
 }
 
@@ -70,7 +70,9 @@ html.light .text-zinc-500 {
 
 /* Matrix accent text needs to be ink-dark in light mode.
    Tailwind generates both `text-matrix-200` and opacity variants like `text-matrix-200/90`.
-   Those are different CSS classes, so we override both. */
+   Those are different CSS classes, so we override both.
+
+   Also add a broad catch-all for any text-matrix-* class to avoid missing variants. */
 html.light .text-matrix-50,
 html.light .text-matrix-50\/80,
 html.light .text-matrix-50\/90,
@@ -83,6 +85,10 @@ html.light .text-matrix-200\/90,
 html.light .text-matrix-300,
 html.light .text-matrix-300\/80,
 html.light .text-matrix-300\/90 {
+  color: var(--matrix-ink) !important;
+}
+
+html.light [class*='text-matrix-'] {
   color: var(--matrix-ink) !important;
 }
 
