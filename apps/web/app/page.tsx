@@ -5,11 +5,21 @@ import { ChatPanel } from '../components/ChatPanel';
 import { KanbanPanel } from '../components/KanbanPanel';
 import { RunsPanel } from '../components/RunsPanel';
 
-export default function HomePage() {
+type TabKey = 'chat' | 'kanban' | 'runs';
+
+export default async function HomePage({
+  searchParams
+}: {
+  searchParams: Promise<{ tab?: string }>;
+}) {
+  const sp = await searchParams;
+  const tab = (sp.tab ?? '').toLowerCase();
+  const initial: TabKey = tab === 'runs' ? 'runs' : tab === 'kanban' ? 'kanban' : 'chat';
+
   return (
     <ProjectProvider>
       <AppShell>
-        <TopTabs chat={<ChatPanel />} kanban={<KanbanPanel />} runs={<RunsPanel />} />
+        <TopTabs initial={initial} chat={<ChatPanel />} kanban={<KanbanPanel />} runs={<RunsPanel />} />
       </AppShell>
     </ProjectProvider>
   );

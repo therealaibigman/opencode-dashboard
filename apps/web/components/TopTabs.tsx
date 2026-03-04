@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 type TabKey = 'chat' | 'kanban' | 'runs';
 
@@ -16,6 +16,10 @@ export function TopTabs({
   runs: React.ReactNode;
 }) {
   const [tab, setTab] = useState<TabKey>(initial);
+
+  useEffect(() => {
+    setTab(initial);
+  }, [initial]);
 
   return (
     <div className="flex h-full min-h-[calc(100vh-48px)] flex-col">
@@ -60,9 +64,7 @@ export function TopTabs({
       </header>
 
       <section className="flex-1 rounded-2xl border border-matrix-500/20 bg-bg-2/40 shadow-neon backdrop-blur">
-        <div className="h-full p-4 md:p-6">
-          {tab === 'chat' ? chat : tab === 'kanban' ? kanban : runs}
-        </div>
+        <div className="h-full p-4 md:p-6">{tab === 'chat' ? chat : tab === 'kanban' ? kanban : runs}</div>
       </section>
     </div>
   );
