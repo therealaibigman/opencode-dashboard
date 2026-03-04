@@ -1029,27 +1029,71 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
           payload: { message: 'No package.json; skipping checks.' }
         });
       } else {
-        for (const cmd of cmds) {
-          const res = await runCmd({ cwd: ws, cmd });
-          const outId = await writeArtifact({ db, projectId, runId, stepId, kind: 'stdout', name: `${cmd} stdout`, content: res.stdout });
-          const errId = await writeArtifact({ db, projectId, runId, stepId, kind: 'stderr', name: `${cmd} stderr`, content: res.stderr });
-          if (res.exitCode !== 0) {
-            await db.update(runs).set({ status: 'failed', finishedAt: new Date() }).where(eq(runs.id, runId));
-            await appendEventRow(db, {
-              id: newId('evt'),
-              ts: nowIso(),
-              seq: seq++,
-              type: 'run.step.failed',
-              source: 'worker',
-              severity: 'error',
-              project_id: projectId,
-              task_id: taskId ?? undefined,
-              run_id: runId,
-              step_id: stepId,
-              payload: { message: `${cmd} failed`, stdout_artifact_id: outId, stderr_artifact_id: errId }
+
+        const limit = 2;
+        let idx = 0;
+        let failed: { cmd: string; outId: string; errId: string; exitCode: number } | null = null;
+
+        const runOne = async () => {
+          while (true) {
+            const i = idx++;
+            const cmd = cmds[i];
+            if (!cmd) return;
+            if (failed) return;
+
+            const res = await runCmd({ cwd: ws, cmd });
+            const outId = await writeArtifact({
+              db,
+              projectId,
+              runId,
+              stepId,
+              kind: 'stdout',
+              name: `${cmd} stdout`,
+              content: res.stdout
             });
-            return;
+            const errId = await writeArtifact({
+              db,
+              projectId,
+              runId,
+              stepId,
+              kind: 'stderr',
+              name: `${cmd} stderr`,
+              content: res.stderr
+            });
+
+            if (res.exitCode !== 0 && !failed) {
+              failed = { cmd, outId, errId, exitCode: res.exitCode };
+              return;
+            }
           }
+        };
+
+        const workers = Array.from({ length: Math.max(1, Math.min(limit, cmds.length)) }, () => runOne());
+        await Promise.all(workers);
+
+        const f = failed as unknown as { cmd: string; outId: string; errId: string; exitCode: number } | null;
+        if (f) {
+          await db.update(runs).set({ status: 'failed', finishedAt: new Date() }).where(eq(runs.id, runId));
+          await appendEventRow(db, {
+            id: newId('evt'),
+            ts: nowIso(),
+            seq: seq++,
+            type: 'run.step.failed',
+            source: 'worker',
+            severity: 'error',
+            project_id: projectId,
+            task_id: taskId ?? undefined,
+            run_id: runId,
+            step_id: stepId,
+            payload: {
+              message: `checks failed: ${f.cmd}`,
+              cmd: f.cmd,
+              exit_code: f.exitCode,
+              stdout_artifact_id: f.outId,
+              stderr_artifact_id: f.errId
+            }
+          });
+          return;
         }
       }
 
