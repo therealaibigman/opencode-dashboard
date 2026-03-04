@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from 'react';
 export type OcdashSettings = {
   yolo: boolean;
   modelProfile: string;
+  defaultPipelineId: string;
 };
 
 const KEY = 'ocdash:settings:v1';
@@ -19,13 +20,14 @@ function safeParse(v: string | null): Partial<OcdashSettings> {
 }
 
 export function useSettings() {
-  const [settings, setSettings] = useState<OcdashSettings>({ yolo: false, modelProfile: 'balanced' });
+  const [settings, setSettings] = useState<OcdashSettings>({ yolo: false, modelProfile: 'balanced', defaultPipelineId: '' });
 
   useEffect(() => {
     const stored = safeParse(typeof window !== 'undefined' ? window.localStorage.getItem(KEY) : null);
     setSettings({
       yolo: Boolean(stored.yolo ?? false),
-      modelProfile: String(stored.modelProfile ?? 'balanced')
+      modelProfile: String(stored.modelProfile ?? 'balanced'),
+      defaultPipelineId: String(stored.defaultPipelineId ?? '')
     });
   }, []);
 
@@ -40,7 +42,8 @@ export function useSettings() {
   const api = useMemo(
     () => ({
       setYolo: (yolo: boolean) => setSettings((s) => ({ ...s, yolo })),
-      setModelProfile: (modelProfile: string) => setSettings((s) => ({ ...s, modelProfile }))
+      setModelProfile: (modelProfile: string) => setSettings((s) => ({ ...s, modelProfile })),
+      setDefaultPipelineId: (defaultPipelineId: string) => setSettings((s) => ({ ...s, defaultPipelineId }))
     }),
     []
   );

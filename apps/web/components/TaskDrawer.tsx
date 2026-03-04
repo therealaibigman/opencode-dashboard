@@ -288,7 +288,8 @@ export function TaskDrawer({ task, onClose }: { task: Task; onClose: () => void 
           thread_id: tid,
           model_profile: settings.modelProfile || 'balanced',
           kind,
-          parent_run_id: parentRunId ?? null
+          parent_run_id: parentRunId ?? null,
+          pipeline_id: settings.defaultPipelineId || null
         })
       });
       const data = await j<{ run: { id: string } }>(res);

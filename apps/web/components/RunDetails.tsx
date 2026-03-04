@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { validatePlanJson } from '@ocdash/shared';
 import { useBasePath } from './useBasePath';
+import { useSettings } from './useSettings';
 import { RunTimeline } from './RunTimeline';
 
 type RunRow = {
@@ -34,6 +35,8 @@ type ArtifactStub = {
 };
 
 type ArtifactFull = ArtifactStub & { content_text: string };
+
+type StepRow = { id: string; name: string; status: string; model: string | null; startedAt: string | null; finishedAt: string | null; createdAt: string };
 
 type ThreadRow = { id: string; title: string; taskId: string | null; createdAt: string; updatedAt: string };
 type MessageRow = { id: string; role: string; contentMd: string; createdAt: string };
@@ -162,6 +165,7 @@ function PlanViewer({ planText }: { planText: string }) {
 
 export function RunDetails({ runId }: { runId: string }) {
   const BASE = useBasePath();
+  const { settings } = useSettings();
 
   const api = useMemo(
     () => ({
@@ -177,7 +181,8 @@ export function RunDetails({ runId }: { runId: string }) {
       events: `${BASE}/api/runs/${encodeURIComponent(runId)}/events`,
       thread: (id: string) => `${BASE}/api/threads/${encodeURIComponent(id)}`,
       messages: (id: string) => `${BASE}/api/threads/${encodeURIComponent(id)}/messages`,
-      eventsStream: `${BASE}/api/runs/${encodeURIComponent(runId)}/events/stream`
+      eventsStream: `${BASE}/api/runs/${encodeURIComponent(runId)}/events/stream`,
+      steps: `${BASE}/api/runs/${encodeURIComponent(runId)}/steps`
     }),
     [BASE, runId]
   );
@@ -185,6 +190,7 @@ export function RunDetails({ runId }: { runId: string }) {
   const [run, setRun] = useState<RunRow | null>(null);
   const [artifacts, setArtifacts] = useState<ArtifactStub[]>([]);
   const [openArtifact, setOpenArtifact] = useState<ArtifactFull | null>(null);
+  const [steps, setSteps] = useState<StepRow[]>([]);
   const [thread, setThread] = useState<ThreadRow | null>(null);
   const [messages, setMessages] = useState<MessageRow[]>([]);
   const [newMsg, setNewMsg] = useState('');
@@ -217,6 +223,15 @@ export function RunDetails({ runId }: { runId: string }) {
     setMessages(msgs.messages);
   }
 
+  async function refreshSteps() {
+    try {
+      const data = await j<{ steps: StepRow[] }>(await fetch(api.steps, { cache: 'no-store' }));
+      setSteps(data.steps);
+    } catch {
+      // ignore
+    }
+  }
+
   async function refreshArtifacts() {
 
     const a = await j<{ artifacts: ArtifactStub[] }>(await fetch(api.artifacts, { cache: 'no-store' }));
@@ -227,7 +242,7 @@ export function RunDetails({ runId }: { runId: string }) {
     setErr(null);
     setLoading(true);
     try {
-      await Promise.all([refreshRun(), refreshArtifacts()]);
+      await Promise.all([refreshRun(), refreshArtifacts(), refreshSteps()]);
     } catch (e: any) {
       setErr(String(e?.message ?? e));
     } finally {
@@ -309,7 +324,8 @@ export function RunDetails({ runId }: { runId: string }) {
           task_id: run.taskId,
           model_profile: run.modelProfile,
           kind: 'execute',
-          parent_run_id: run.id
+          parent_run_id: run.id,
+          pipeline_id: settings.defaultPipelineId || null
         })
       });
       const data = await j<{ run: { id: string } }>(res);
@@ -423,6 +439,7 @@ export function RunDetails({ runId }: { runId: string }) {
       if (stopRef.current) return;
       refreshArtifacts().catch(() => void 0);
       refreshRun().catch(() => void 0);
+      refreshSteps().catch(() => void 0);
     }, 1500);
 
     return () => {
@@ -670,6 +687,26 @@ export function RunDetails({ runId }: { runId: string }) {
               </button>
             </div>
             <div className="text-[10px] text-zinc-500">Ctrl/Cmd+Enter to send</div>
+          </div>
+        )}
+      </div>
+
+      <div className="rounded-2xl border border-matrix-500/20 bg-black/20 p-3">
+        <div className="mb-2 text-xs font-medium text-matrix-200/90">Run steps</div>
+        {steps.length === 0 ? (
+          <div className="text-[11px] text-zinc-400">No steps recorded.</div>
+        ) : (
+          <div className="space-y-2">
+            {steps.map((st) => (
+              <div key={st.id} className="rounded-xl border border-matrix-500/10 bg-black/20 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-sm font-medium text-zinc-100">{st.name}</div>
+                  <div className="text-[11px] text-zinc-400">{st.status}</div>
+                </div>
+                <div className="mt-1 text-[10px] text-zinc-500 break-all">{st.id}</div>
+                {st.model ? <div className="mt-1 text-[11px] text-zinc-400 break-all">model: {st.model}</div> : null}
+              </div>
+            ))}
           </div>
         )}
       </div>

@@ -6,7 +6,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 import { makeDb } from '@ocdash/db/client';
-import { artifacts, events, messages, projects, runs, tasks, threads } from '@ocdash/db/schema';
+import { artifacts, events, messages, projects, runSteps, runs, tasks, threads } from '@ocdash/db/schema';
 
 import { newId } from '@ocdash/shared';
 import type { OcdashEvent } from '@ocdash/shared';
@@ -323,7 +323,7 @@ async function processRun(db: any, runId: string) {
   });
 
 
-  const stepId = 'stp_opencode_run';
+  const stepId = newId('stp');
 
   await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: `Run started (${kind}).` });
 
@@ -403,6 +403,34 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
   const directModel = direct.includes('/') ? direct : '';
   const model = (directModel || (kind === 'plan' ? String((proj as any)?.planModel ?? '') : String((proj as any)?.executeModel ?? '')) || (process.env.OPENCODE_MODEL ?? '')).trim() || undefined;
   const timeoutMs = Number(process.env.OPENCODE_TIMEOUT_MS ?? '600000');
+
+  const stepName = kind === 'plan' ? 'plan' : 'execute';
+
+  await db.insert(runSteps).values({
+    id: stepId,
+    projectId,
+    runId,
+    name: stepName,
+    status: 'running',
+    model: model ?? null,
+    startedAt: new Date(),
+    inputJson: { kind }
+  });
+
+  await appendEventRow(db, {
+    id: newId('evt'),
+    ts: nowIso(),
+    seq: seq++,
+    type: 'run.step.started',
+    source: 'worker',
+    severity: 'info',
+    project_id: projectId,
+    task_id: taskId ?? undefined,
+    thread_id: threadId ?? undefined,
+    run_id: runId,
+    step_id: stepId,
+    payload: { name: stepName, model: model ?? null }
+  });
 
   await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: `Run started (${kind}).` });
 
@@ -1019,6 +1047,21 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
   }
 
   if (result.exitCode === 0) {
+    await db.update(runSteps).set({ status: 'succeeded', finishedAt: new Date(), outputJson: { exitCode: result.exitCode } }).where(eq(runSteps.id, stepId));
+    await appendEventRow(db, {
+      id: newId('evt'),
+      ts: nowIso(),
+      seq: seq++,
+      type: 'run.step.completed',
+      source: 'worker',
+      severity: 'info',
+      project_id: projectId,
+      task_id: taskId ?? undefined,
+      thread_id: threadId ?? undefined,
+      run_id: runId,
+      step_id: stepId,
+      payload: { name: stepName }
+    });
     await appendEventRow(db, {
       id: newId('evt'),
       ts: nowIso(),

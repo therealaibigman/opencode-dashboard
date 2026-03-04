@@ -112,6 +112,20 @@ export const messages = pgTable(
   })
 );
 
+export const pipelines = pgTable(
+  'pipelines',
+  {
+    id: text('id').primaryKey(),
+    name: text('name').notNull(),
+    version: text('version').notNull().default('v1'),
+    graphJson: jsonb('graph_json').notNull().default({}),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (p) => ({
+    nameIdx: index('pipelines_name_idx').on(p.name)
+  })
+);
+
 export const runs = pgTable(
   'runs',
   {
@@ -126,6 +140,9 @@ export const runs = pgTable(
 
     // Link to a discussion thread.
     threadId: text('thread_id').references(() => threads.id, { onDelete: 'set null' }),
+
+    // Optional pipeline template used to execute this run.
+    pipelineId: text('pipeline_id').references(() => pipelines.id, { onDelete: 'set null' }),
 
     kind: runKindEnum('kind').notNull().default('execute'),
 
@@ -151,9 +168,35 @@ export const runs = pgTable(
     statusIdx: index('runs_status_idx').on(r.status),
     kindIdx: index('runs_kind_idx').on(r.kind),
     parentIdx: index('runs_parent_idx').on(r.parentRunId),
-    threadIdx: index('runs_thread_idx').on(r.threadId)
+    threadIdx: index('runs_thread_idx').on(r.threadId),
+    pipelineIdx: index('runs_pipeline_idx').on(r.pipelineId)
   })
 );
+export const runSteps = pgTable(
+  'run_steps',
+  {
+    id: text('id').primaryKey(),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    runId: text('run_id')
+      .notNull()
+      .references(() => runs.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    status: text('status').notNull().default('queued'),
+    model: text('model'),
+    startedAt: timestamp('started_at', { withTimezone: true }),
+    finishedAt: timestamp('finished_at', { withTimezone: true }),
+    inputJson: jsonb('input_json').notNull().default({}),
+    outputJson: jsonb('output_json').notNull().default({}),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (s) => ({
+    runIdx: index('run_steps_run_idx').on(s.runId, s.createdAt),
+    projectIdx: index('run_steps_project_idx').on(s.projectId, s.createdAt)
+  })
+);
+
 
 export const artifacts = pgTable(
   'artifacts',

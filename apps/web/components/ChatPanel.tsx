@@ -81,7 +81,8 @@ export function ChatPanel() {
         task_id: taskId ?? null,
         thread_id: threadId ?? null,
         model_profile: settings.modelProfile || 'balanced',
-        kind
+        kind,
+        pipeline_id: settings.defaultPipelineId || null
       })
     });
     const data = await j<{ run: { id: string } }>(res);

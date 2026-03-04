@@ -43,6 +43,7 @@ export async function POST(req: Request) {
     model_profile?: string;
     kind?: 'execute' | 'plan';
     parent_run_id?: string | null;
+    pipeline_id?: string | null;
   };
 
   const projectId = (body.project_id ?? '').trim();
@@ -53,6 +54,7 @@ export async function POST(req: Request) {
   const modelProfile = (body.model_profile ?? 'balanced').trim();
   const kind = body.kind ?? 'execute';
   const parentRunId = body.parent_run_id ? String(body.parent_run_id).trim() : null;
+  const pipelineId = body.pipeline_id ? String(body.pipeline_id).trim() : null;
 
   const { db, pool } = makeDb(url);
   try {
@@ -84,6 +86,7 @@ export async function POST(req: Request) {
       projectId,
       taskId,
       threadId,
+      pipelineId,
       modelProfile,
       kind,
       parentRunId,
@@ -138,7 +141,8 @@ export async function POST(req: Request) {
           thread_id: threadId,
           model_profile: modelProfile,
           kind,
-          parent_run_id: parentRunId
+          parent_run_id: parentRunId,
+          pipeline_id: pipelineId
         }
       }
     });
