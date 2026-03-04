@@ -3,7 +3,8 @@ import { eq } from 'drizzle-orm';
 
 import { makeDb } from '@ocdash/db/client';
 import { projects } from '@ocdash/db/schema';
-import { newId, prepareWorkspaceForProject } from '@ocdash/shared';
+import { newId } from '@ocdash/shared';
+import { prepareWorkspaceForProject } from '@ocdash/shared/workspaces';
 import { appendProjectEvent } from '../../../_lib/eventlog';
 
 export const runtime = 'nodejs';

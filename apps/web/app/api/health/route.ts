@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
-import { execSync } from 'node:child_process';
-import os from 'node:os';
+import { execSync } from 'child_process';
+import os from 'os';
 
 import { makeDb } from '@ocdash/db/client';
 

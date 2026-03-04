@@ -4,22 +4,20 @@ import { and, desc, eq, sql } from 'drizzle-orm';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+
 import { makeDb } from '@ocdash/db/client';
 import { artifacts, events, projects, runs, tasks } from '@ocdash/db/schema';
-import {
-  newId,
-  extractUnifiedDiffFromText,
-  wrapHunkAsFilePatch,
-  policyCheckCommand,
-  policyCheckPath,
-  prepareWorkspaceForProject,
-  validatePlanJson,
-  createGithubPr
-} from '@ocdash/shared';
+
+import { newId } from '@ocdash/shared';
 import type { OcdashEvent } from '@ocdash/shared';
+import { extractUnifiedDiffFromText, wrapHunkAsFilePatch } from '@ocdash/shared/patch';
+import { policyCheckCommand, policyCheckPath } from '@ocdash/shared/policy';
+import { prepareWorkspaceForProject } from '@ocdash/shared/workspaces';
+import { validatePlanJson } from '@ocdash/shared/plan';
+import { createGithubPr } from '@ocdash/shared/github';
+
 import { requireEnv } from './env.js';
 import { opencodeRun } from './opencode.js';
-
 const DATABASE_URL = requireEnv('DATABASE_URL');
 const POLL_MS = Number(process.env.WORKER_POLL_INTERVAL_MS ?? '750');
 

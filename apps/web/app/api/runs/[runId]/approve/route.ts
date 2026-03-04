@@ -1,20 +1,15 @@
 import { NextResponse } from 'next/server';
 import { and, desc, eq, inArray } from 'drizzle-orm';
-import { spawn } from 'node:child_process';
-import fs from 'node:fs/promises';
-import path from 'node:path';
+import { spawn } from 'child_process';
+import fs from 'fs/promises';
+import path from 'path';
 
 import { makeDb } from '@ocdash/db/client';
 import { artifacts, projects, runs } from '@ocdash/db/schema';
-import {
-  extractAddedLines,
-  extractTouchedPaths,
-  policyCheckCommand,
-  policyCheckPath,
-  wrapHunkAsFilePatch,
-  createGithubPr
-} from '@ocdash/shared';
+import { extractAddedLines, extractTouchedPaths, wrapHunkAsFilePatch } from '@ocdash/shared/patch';
+import { policyCheckCommand, policyCheckPath } from '@ocdash/shared/policy';
 import { newId } from '@ocdash/shared';
+import { createGithubPr } from '@ocdash/shared/github';
 import { appendProjectEvent } from '../../../_lib/eventlog';
 
 export const runtime = 'nodejs';

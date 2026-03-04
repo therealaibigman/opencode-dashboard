@@ -1,6 +1,6 @@
-import path from 'node:path';
-import fs from 'node:fs/promises';
-import { spawn } from 'node:child_process';
+import path from 'path';
+import fs from 'fs/promises';
+import { spawn } from 'child_process';
 
 export type ProjectSource = {
   id: string;

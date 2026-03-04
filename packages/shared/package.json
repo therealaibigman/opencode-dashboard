@@ -6,7 +6,12 @@
   "exports": {
     ".": "./src/index.ts",
     "./events": "./src/events.ts",
-    "./ids": "./src/ids.ts"
+    "./ids": "./src/ids.ts",
+    "./plan": "./src/plan.ts",
+    "./patch": "./src/patch.ts",
+    "./policy": "./src/policy.ts",
+    "./workspaces": "./src/workspaces.ts",
+    "./github": "./src/github.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json"
