@@ -829,6 +829,8 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
             step_id: stepId,
             payload: { tool: 'github.pr.create', url: prRes.url, branch: prRes.branch, number: prRes.number ?? null, repo: prRes.repo ?? null, state: prRes.state ?? null, artifact_id: prArtId }
           });
+
+          await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: `Published: PR ${(prRes as any).url}` });
         } else {
           await db.update(runs)
             .set({ prUrl: null, prBranch: prRes.branch, prNumber: null, prRepo: null, prState: 'pushed' })
@@ -847,6 +849,9 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
             step_id: stepId,
             payload: { tool: 'github.push.initial', branch: prRes.branch }
           });
+
+
+          await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: `Published: pushed to ${prRes.branch}` });
         }
       } else {
         const prErrId = await writeArtifact({ db, projectId, runId, stepId, kind: 'stderr', name: 'github pr create failed', content: String(prRes.error) });
