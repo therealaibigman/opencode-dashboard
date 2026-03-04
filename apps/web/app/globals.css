@@ -87,6 +87,12 @@ html.light .text-red-50 {
   color: rgb(127 29 29) !important; /* red-900 */
 }
 
+/* Blue buttons: don't use white text on pale blue in light mode */
+html.light .text-blue-50,
+html.light .text-blue-100 {
+  color: rgb(30 58 138) !important; /* blue-900 */
+}
+
 html.light .bg-black\/15,
 html.light .bg-black\/20,
 html.light .bg-black\/25,
