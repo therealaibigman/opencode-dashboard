@@ -29,6 +29,11 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
   async function refreshProjects() {
     const data = await j<{ projects: Project[] }>(await fetch(api.projects, { cache: 'no-store' }));
     setProjects(data.projects);
+
+    // If selection is invalid (deleted), pick the first available project.
+    if (data.projects.length && !data.projects.find((p) => p.id === selectedProjectId)) {
+      setSelectedProjectId(data.projects[0]!.id);
+    }
   }
 
   useEffect(() => {

@@ -13,8 +13,11 @@ export function AppShell({ title, children }: { title?: string; children: React.
   const BASE = useBasePath();
   const { projects, selectedProjectId, setSelectedProjectId, refreshProjects } = useProject();
 
-  const [creating, setCreating] = useState(false);
+  const [creatingDemo, setCreatingDemo] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [creatingProject, setCreatingProject] = useState(false);
+  const [newProjectName, setNewProjectName] = useState('');
+  const [newProjectId, setNewProjectId] = useState('');
   const [err, setErr] = useState<string | null>(null);
 
   const api = useMemo(
@@ -27,7 +30,7 @@ export function AppShell({ title, children }: { title?: string; children: React.
 
   async function ensureDemoProject() {
     setErr(null);
-    setCreating(true);
+    setCreatingDemo(true);
     try {
       const res = await fetch(api.projects, {
         method: 'POST',
@@ -40,7 +43,36 @@ export function AppShell({ title, children }: { title?: string; children: React.
     } catch (e: any) {
       setErr(String(e?.message ?? e));
     } finally {
-      setCreating(false);
+      setCreatingDemo(false);
+    }
+  }
+
+  async function createProject() {
+    const name = newProjectName.trim();
+    const id = newProjectId.trim();
+    if (!name) {
+      setErr('Project name is required');
+      return;
+    }
+
+    setErr(null);
+    setCreatingProject(true);
+    try {
+      const res = await fetch(api.projects, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name, ...(id ? { id } : {}) })
+      });
+
+      const data = await j<{ project: { id: string; name: string } }>(res);
+      await refreshProjects();
+      setSelectedProjectId(data.project.id);
+      setNewProjectName('');
+      setNewProjectId('');
+    } catch (e: any) {
+      setErr(String(e?.message ?? e));
+    } finally {
+      setCreatingProject(false);
     }
   }
 
@@ -62,11 +94,6 @@ export function AppShell({ title, children }: { title?: string; children: React.
       await j(res);
 
       await refreshProjects();
-
-      // pick a sane next selection
-      const remaining = projects.filter((x) => x.id !== selectedProjectId);
-      const nextId = remaining[0]?.id ?? 'prj_demo';
-      setSelectedProjectId(nextId);
     } catch (e: any) {
       setErr(String(e?.message ?? e));
     } finally {
@@ -98,18 +125,48 @@ export function AppShell({ title, children }: { title?: string; children: React.
           )}
         </select>
 
+        <div className="mt-4 rounded-xl border border-matrix-500/15 bg-black/15 p-3">
+          <div className="mb-2 text-xs font-medium text-matrix-200/90">Create project</div>
+
+          <div className="space-y-2">
+            <input
+              value={newProjectName}
+              onChange={(e) => setNewProjectName(e.target.value)}
+              placeholder="Project name (required)"
+              className="w-full rounded-lg border border-matrix-500/20 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:ring-1 focus:ring-matrix-500/40"
+            />
+
+            <input
+              value={newProjectId}
+              onChange={(e) => setNewProjectId(e.target.value)}
+              placeholder="Project id (optional, e.g. prj_acme)"
+              className="w-full rounded-lg border border-matrix-500/20 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:ring-1 focus:ring-matrix-500/40"
+            />
+
+            <button
+              onClick={createProject}
+              disabled={creatingProject}
+              className="w-full rounded-lg bg-matrix-500/15 px-3 py-2 text-sm text-matrix-100 ring-1 ring-matrix-500/40 hover:bg-matrix-500/20 disabled:opacity-60"
+            >
+              {creatingProject ? 'Creating…' : 'Create Project'}
+            </button>
+
+            <div className="text-[11px] text-zinc-500">If you leave id blank, the API generates one.</div>
+          </div>
+        </div>
+
         <div className="mt-3 grid gap-2">
           <button
             onClick={ensureDemoProject}
-            disabled={creating}
-            className="w-full rounded-lg bg-matrix-500/10 px-3 py-2 text-sm text-matrix-100 ring-1 ring-matrix-500/30 hover:bg-matrix-500/15 disabled:opacity-60"
+            disabled={creatingDemo}
+            className="w-full rounded-lg bg-black/25 px-3 py-2 text-sm text-zinc-200 ring-1 ring-matrix-500/20 hover:bg-black/35 disabled:opacity-60"
           >
-            Ensure Demo
+            {creatingDemo ? 'Working…' : 'Ensure Demo'}
           </button>
 
           <button
             onClick={deleteSelectedProject}
-            disabled={deleting || creating || !selectedProjectId}
+            disabled={deleting || creatingDemo || creatingProject || !selectedProjectId}
             className="w-full rounded-lg bg-red-500/10 px-3 py-2 text-sm text-red-100 ring-1 ring-red-500/30 hover:bg-red-500/15 disabled:opacity-60"
           >
             {deleting ? 'Deleting…' : 'Delete Project'}
