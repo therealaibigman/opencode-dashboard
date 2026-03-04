@@ -166,6 +166,7 @@ export function RunDetails({ runId }: { runId: string }) {
       reject: `${BASE}/api/runs/${encodeURIComponent(runId)}/reject`,
       approvePlan: `${BASE}/api/runs/${encodeURIComponent(runId)}/approve-plan`,
       rejectPlan: `${BASE}/api/runs/${encodeURIComponent(runId)}/reject-plan`,
+      runs: `${BASE}/api/runs`,
       artifacts: `${BASE}/api/runs/${encodeURIComponent(runId)}/artifacts`,
       artifact: (id: string) => `${BASE}/api/artifacts/${encodeURIComponent(id)}`,
       events: `${BASE}/api/runs/${encodeURIComponent(runId)}/events`,
@@ -183,6 +184,7 @@ export function RunDetails({ runId }: { runId: string }) {
   const [approving, setApproving] = useState(false);
   const [rejecting, setRejecting] = useState(false);
   const [prError, setPrError] = useState<string | null>(null);
+  const [queueingExecute, setQueueingExecute] = useState(false);
 
   const stopRef = useRef(false);
 
@@ -265,6 +267,35 @@ export function RunDetails({ runId }: { runId: string }) {
     }
   }
 
+  async function queueExecuteFromThisPlan() {
+    if (!run || run.kind !== 'plan') return;
+
+    const ok = window.confirm(`Queue a new execute run from this plan?\n\nPlan run: ${run.id}`);
+    if (!ok) return;
+
+    setErr(null);
+    setQueueingExecute(true);
+    try {
+      const res = await fetch(api.runs, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          project_id: run.projectId,
+          task_id: run.taskId,
+          model_profile: run.modelProfile,
+          kind: 'execute',
+          parent_run_id: run.id
+        })
+      });
+      const data = await j<{ run: { id: string } }>(res);
+      window.location.href = `/runs/${encodeURIComponent(data.run.id)}`;
+    } catch (e: any) {
+      setErr(String(e?.message ?? e));
+    } finally {
+      setQueueingExecute(false);
+    }
+  }
+
   async function reject() {
     if (run?.status !== 'needs_approval') return;
 
@@ -303,15 +334,6 @@ export function RunDetails({ runId }: { runId: string }) {
     const data = await j<{ artifact: ArtifactFull }>(await fetch(api.artifact(id), { cache: 'no-store' }));
     setOpenArtifact(data.artifact);
   }
-
-  const githubPr = useMemo(() => {
-    // Prefer persisted run.prUrl, fallback to github_pr artifact content.
-    if (run?.prUrl) return { url: run.prUrl, branch: run.prBranch ?? null };
-    const pr = artifacts
-      .filter((a) => a.kind === 'github_pr')
-      .sort((a, b) => (a.created_at > b.created_at ? -1 : 1))[0];
-    return pr ? { url: '(see artifact)', branch: null } : null;
-  }, [artifacts, run?.prBranch, run?.prUrl]);
 
   useEffect(() => {
     refresh().catch(() => void 0);
@@ -428,6 +450,18 @@ export function RunDetails({ runId }: { runId: string }) {
             {run.prUrl}
           </a>
           {run.prBranch ? <span className="text-[11px] text-zinc-500">({run.prBranch})</span> : null}
+        </div>
+      ) : null}
+
+      {run?.kind === 'plan' ? (
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={() => queueExecuteFromThisPlan()}
+            disabled={queueingExecute}
+            className="rounded-lg bg-matrix-500/15 px-3 py-2 text-sm text-matrix-100 ring-1 ring-matrix-500/30 hover:bg-matrix-500/20 disabled:opacity-60"
+          >
+            {queueingExecute ? 'Queueing…' : 'Re-run execute from this plan'}
+          </button>
         </div>
       ) : null}
 

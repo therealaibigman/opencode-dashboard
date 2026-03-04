@@ -13,6 +13,8 @@ type RunRow = {
   kind: 'execute' | 'plan';
   status: string;
   modelProfile: string;
+  prUrl: string | null;
+  prBranch: string | null;
   createdAt: string;
   startedAt: string | null;
   finishedAt: string | null;
@@ -53,35 +55,49 @@ function RunButton({
   indent?: boolean;
 }) {
   return (
-    <button
-      onClick={onOpen}
+    <div
       className={
         indent
-          ? 'block w-full min-w-0 rounded-xl border border-matrix-500/10 bg-black/20 p-3 pl-6 text-left hover:bg-black/30'
-          : 'block w-full min-w-0 rounded-xl border border-matrix-500/10 bg-black/25 p-3 text-left hover:bg-black/35'
+          ? 'block w-full min-w-0 rounded-xl border border-matrix-500/10 bg-black/20 p-3 pl-6'
+          : 'block w-full min-w-0 rounded-xl border border-matrix-500/10 bg-black/25 p-3'
       }
     >
-      <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
-        <div className="min-w-0 break-all text-sm font-medium text-zinc-100">{r.id}</div>
-        <div className="flex items-center gap-2">
-          <span className={`rounded-full px-2 py-1 text-[11px] ring-1 ${kindPill(r.kind)}`}>{r.kind}</span>
-          <span className={`rounded-full px-2 py-1 text-[11px] ring-1 ${pill(r.status)}`}>{r.status}</span>
+      <button onClick={onOpen} className="block w-full min-w-0 text-left hover:opacity-95">
+        <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+          <div className="min-w-0 break-all text-sm font-medium text-zinc-100">{r.id}</div>
+          <div className="flex items-center gap-2">
+            <span className={`rounded-full px-2 py-1 text-[11px] ring-1 ${kindPill(r.kind)}`}>{r.kind}</span>
+            <span className={`rounded-full px-2 py-1 text-[11px] ring-1 ${pill(r.status)}`}>{r.status}</span>
+          </div>
         </div>
-      </div>
 
-      <div className="mt-2 grid gap-1 text-[11px] text-zinc-400 md:grid-cols-3">
-        <div className="min-w-0 break-all">task: {r.taskId ?? '—'}</div>
-        <div>created: {fmtTs(r.createdAt)}</div>
-        <div>
-          {r.startedAt ? `start: ${fmtTs(r.startedAt)}` : 'start: —'}
-          {r.finishedAt ? ` • end: ${fmtTs(r.finishedAt)}` : ''}
+        <div className="mt-2 grid gap-1 text-[11px] text-zinc-400 md:grid-cols-3">
+          <div className="min-w-0 break-all">task: {r.taskId ?? '—'}</div>
+          <div>created: {fmtTs(r.createdAt)}</div>
+          <div>
+            {r.startedAt ? `start: ${fmtTs(r.startedAt)}` : 'start: —'}
+            {r.finishedAt ? ` • end: ${fmtTs(r.finishedAt)}` : ''}
+          </div>
         </div>
-      </div>
 
-      {indent && r.parentRunId ? (
-        <div className="mt-1 text-[10px] text-zinc-500">from plan: {r.parentRunId}</div>
+        {indent && r.parentRunId ? <div className="mt-1 text-[10px] text-zinc-500">from plan: {r.parentRunId}</div> : null}
+      </button>
+
+      {r.prUrl ? (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <a
+            className="rounded-lg bg-matrix-500/15 px-2 py-1 text-[11px] text-matrix-100 ring-1 ring-matrix-500/30 hover:bg-matrix-500/20"
+            href={r.prUrl}
+            target="_blank"
+            rel="noreferrer"
+            onClick={(e) => e.stopPropagation()}
+          >
+            Open PR
+          </a>
+          {r.prBranch ? <div className="text-[10px] text-zinc-500">{r.prBranch}</div> : null}
+        </div>
       ) : null}
-    </button>
+    </div>
   );
 }
 
@@ -128,7 +144,6 @@ export function RunsPanel() {
     }
   }
 
-  // display order: plans + top-level executes, then children directly under plan.
   const topLevel = runs.filter((r) => !r.parentRunId);
 
   return (
@@ -136,9 +151,7 @@ export function RunsPanel() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div className="space-y-2">
           <div className="text-xs text-zinc-300">Project</div>
-          <div className="rounded-lg border border-matrix-500/20 bg-black/25 px-3 py-2 text-sm text-zinc-100">
-            {projectId}
-          </div>
+          <div className="rounded-lg border border-matrix-500/20 bg-black/25 px-3 py-2 text-sm text-zinc-100">{projectId}</div>
         </div>
 
         <button
@@ -149,9 +162,7 @@ export function RunsPanel() {
         </button>
       </div>
 
-      {err ? (
-        <div className="rounded-xl border border-red-500/30 bg-red-950/30 p-3 text-sm text-red-100">{err}</div>
-      ) : null}
+      {err ? <div className="rounded-xl border border-red-500/30 bg-red-950/30 p-3 text-sm text-red-100">{err}</div> : null}
 
       <div className="rounded-2xl border border-matrix-500/20 bg-black/20 p-3">
         <div className="mb-2 text-xs font-medium text-matrix-200/90">Recent runs</div>
@@ -169,12 +180,7 @@ export function RunsPanel() {
                 {kids.length ? (
                   <div className="space-y-2">
                     {kids.map((k) => (
-                      <RunButton
-                        key={k.id}
-                        r={k}
-                        indent
-                        onOpen={() => router.push(`/runs/${encodeURIComponent(k.id)}`)}
-                      />
+                      <RunButton key={k.id} r={k} indent onOpen={() => router.push(`/runs/${encodeURIComponent(k.id)}`)} />
                     ))}
                   </div>
                 ) : null}
