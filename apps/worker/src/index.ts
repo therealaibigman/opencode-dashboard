@@ -136,6 +136,81 @@ async function runCmd({
   });
 }
 
+async function runCmdShell({
+  cwd,
+  cmd,
+  timeoutMs = 10 * 60 * 1000
+}: {
+  cwd: string;
+  cmd: string;
+  timeoutMs?: number;
+}): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  const dec = policyCheckCommand(cmd);
+  if (!dec.ok) return { exitCode: 126, stdout: '', stderr: `[policy] ${dec.reason}` };
+
+  return await new Promise((resolve) => {
+    const child = spawn('bash', ['-lc', cmd], { cwd, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
+
+    let stdout = '';
+    let stderr = '';
+
+    const t = setTimeout(() => {
+      stderr += `\n[worker] timeout after ${timeoutMs}ms`;
+      child.kill('SIGKILL');
+    }, timeoutMs);
+
+    child.stdout.on('data', (d) => (stdout += d.toString()));
+    child.stderr.on('data', (d) => (stderr += d.toString()));
+
+    child.on('close', (code) => {
+      clearTimeout(t);
+      resolve({ exitCode: code ?? 1, stdout, stderr });
+    });
+
+    child.on('error', (err) => {
+      clearTimeout(t);
+      resolve({ exitCode: 1, stdout, stderr: `${stderr}\n${String(err)}` });
+    });
+  });
+}
+
+async function createGithubPr({
+  ws,
+  runId,
+  baseBranch,
+  title,
+  body
+}: {
+  ws: string;
+  runId: string;
+  baseBranch: string;
+  title: string;
+  body: string;
+}): Promise<{ ok: true; url: string } | { ok: false; error: string }> {
+  const rem = await runCmd({ cwd: ws, cmd: 'git remote' });
+  if (rem.exitCode !== 0) return { ok: false, error: rem.stderr || 'git remote failed' };
+  const remotes = rem.stdout.split(/\s+/).map((x) => x.trim()).filter(Boolean);
+  if (!remotes.includes('origin')) return { ok: false, error: 'no origin remote configured' };
+
+  const branch = `ocdash/run_${runId}`;
+
+  const b = await runCmd({ cwd: ws, cmd: `git checkout -B ${branch}` });
+  if (b.exitCode !== 0) return { ok: false, error: b.stderr || b.stdout || 'git checkout failed' };
+
+  const push = await runCmd({ cwd: ws, cmd: `git push -u origin ${branch}` });
+  if (push.exitCode !== 0) return { ok: false, error: push.stderr || push.stdout || 'git push failed' };
+
+  const cmd = `gh pr create --base ${baseBranch} --head ${branch} --title ${JSON.stringify(title)} --body ${JSON.stringify(body)}`;
+  const pr = await runCmdShell({ cwd: ws, cmd });
+  if (pr.exitCode !== 0) return { ok: false, error: pr.stderr || pr.stdout || 'gh pr create failed' };
+
+  const url = (pr.stdout.trim().split(/\s+/).find((x) => x.startsWith('http')) ?? '').trim();
+  if (!url) return { ok: false, error: `PR created but URL not detected: ${pr.stdout.trim()}` };
+
+  return { ok: true, url };
+}
+
+
 async function fileExists(p: string) {
   try {
     await fs.stat(p);
@@ -175,6 +250,7 @@ async function processRun(db: any, runId: string) {
 
   const projRows = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
   const proj = projRows[0];
+  const baseBranch = String((proj as any)?.defaultBranch ?? 'main') || 'main';
 
   let taskTitle = '';
   let taskBody = '';
@@ -607,6 +683,197 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
 
           return;
         }
+
+
+      // AUTO_APPLY_START
+      // Auto-apply path (policy allowed, no approval required).
+      await appendEventRow(db, {
+        id: newId('evt'),
+        ts: nowIso(),
+        seq: seq++,
+        type: 'run.step.progress',
+        source: 'worker',
+        severity: 'info',
+        project_id: projectId,
+        task_id: taskId ?? undefined,
+        run_id: runId,
+        step_id: stepId,
+        payload: { message: 'Policy OK. Auto-applying patch + checks + commit + PR.' }
+      });
+
+      const patchFile = path.join(ws, `.ocdash_auto_${Date.now()}.diff`);
+      await fs.writeFile(patchFile, normalizedPatchText, 'utf8');
+
+      let applyRes = await runCmd({ cwd: ws, cmd: `git apply ${patchFile}` });
+      let method = 'git apply';
+      if (applyRes.exitCode !== 0) {
+        const p2 = await runCmd({ cwd: ws, cmd: `patch -p1 --forward --batch -i ${patchFile}` });
+        method = 'patch -p1';
+        applyRes = {
+          exitCode: p2.exitCode,
+          stdout: `${applyRes.stdout}\n---\n[fallback patch stdout]\n${p2.stdout}`,
+          stderr: `${applyRes.stderr}\n---\n[fallback patch stderr]\n${p2.stderr}`
+        };
+      }
+
+      const applyOutId = await writeArtifact({
+        db,
+        projectId,
+        runId,
+        stepId,
+        kind: 'stdout',
+        name: `apply patch stdout (${method})`,
+        content: applyRes.stdout
+      });
+      const applyErrId = await writeArtifact({
+        db,
+        projectId,
+        runId,
+        stepId,
+        kind: 'stderr',
+        name: `apply patch stderr (${method})`,
+        content: applyRes.stderr
+      });
+
+      if (applyRes.exitCode !== 0) {
+        await db.update(runs).set({ status: 'failed', finishedAt: new Date() }).where(eq(runs.id, runId));
+        await appendEventRow(db, {
+          id: newId('evt'),
+          ts: nowIso(),
+          seq: seq++,
+          type: 'run.step.failed',
+          source: 'worker',
+          severity: 'error',
+          project_id: projectId,
+          task_id: taskId ?? undefined,
+          run_id: runId,
+          step_id: stepId,
+          payload: { message: 'Auto-apply patch failed', stdout_artifact_id: applyOutId, stderr_artifact_id: applyErrId }
+        });
+        return;
+      }
+
+      const autoCmdsRaw = String(process.env.OC_DASH_AUTO_COMMANDS ?? '').trim();
+      const cmds = autoCmdsRaw
+        ? autoCmdsRaw.split(',').map((x) => x.trim()).filter(Boolean)
+        : ['npm test', 'npm run lint', 'npm run typecheck'];
+
+      const hasPkg = await fileExists(path.join(ws, 'package.json'));
+      if (!hasPkg) {
+        await appendEventRow(db, {
+          id: newId('evt'),
+          ts: nowIso(),
+          seq: seq++,
+          type: 'run.step.progress',
+          source: 'worker',
+          severity: 'info',
+          project_id: projectId,
+          task_id: taskId ?? undefined,
+          run_id: runId,
+          step_id: stepId,
+          payload: { message: 'No package.json; skipping checks.' }
+        });
+      } else {
+        for (const cmd of cmds) {
+          const res = await runCmd({ cwd: ws, cmd });
+          const outId = await writeArtifact({ db, projectId, runId, stepId, kind: 'stdout', name: `${cmd} stdout`, content: res.stdout });
+          const errId = await writeArtifact({ db, projectId, runId, stepId, kind: 'stderr', name: `${cmd} stderr`, content: res.stderr });
+          if (res.exitCode !== 0) {
+            await db.update(runs).set({ status: 'failed', finishedAt: new Date() }).where(eq(runs.id, runId));
+            await appendEventRow(db, {
+              id: newId('evt'),
+              ts: nowIso(),
+              seq: seq++,
+              type: 'run.step.failed',
+              source: 'worker',
+              severity: 'error',
+              project_id: projectId,
+              task_id: taskId ?? undefined,
+              run_id: runId,
+              step_id: stepId,
+              payload: { message: `${cmd} failed`, stdout_artifact_id: outId, stderr_artifact_id: errId }
+            });
+            return;
+          }
+        }
+      }
+
+      await runCmd({ cwd: ws, cmd: 'git add -A' });
+      const commitMsg = `ocdash: auto-apply for ${taskId ?? runId}`;
+      const commitRes = await runCmdShell({ cwd: ws, cmd: `git commit -m ${JSON.stringify(commitMsg)}` });
+      const cOut = await writeArtifact({ db, projectId, runId, stepId, kind: 'stdout', name: 'git commit stdout', content: commitRes.stdout });
+      const cErr = await writeArtifact({ db, projectId, runId, stepId, kind: 'stderr', name: 'git commit stderr', content: commitRes.stderr });
+
+      if (commitRes.exitCode !== 0) {
+        await db.update(runs).set({ status: 'failed', finishedAt: new Date() }).where(eq(runs.id, runId));
+        await appendEventRow(db, {
+          id: newId('evt'),
+          ts: nowIso(),
+          seq: seq++,
+          type: 'run.step.failed',
+          source: 'worker',
+          severity: 'error',
+          project_id: projectId,
+          task_id: taskId ?? undefined,
+          run_id: runId,
+          step_id: stepId,
+          payload: { message: 'git commit failed', stdout_artifact_id: cOut, stderr_artifact_id: cErr }
+        });
+        return;
+      }
+
+      const prTitle = `ocdash: ${taskTitle || taskId || runId}`;
+      const prBody = `Automated changes from OpenCode Dashboard.\n\nRun: ${runId}\nProject: ${projectId}\nTask: ${taskId ?? '(none)'}\n`;
+      const prRes = await createGithubPr({ ws, runId, baseBranch, title: prTitle, body: prBody });
+
+      if (prRes.ok) {
+        const prArtId = await writeArtifact({ db, projectId, runId, stepId, kind: 'github_pr', name: 'GitHub PR', content: prRes.url + '\n' });
+        await appendEventRow(db, {
+          id: newId('evt'),
+          ts: nowIso(),
+          seq: seq++,
+          type: 'tool.call.completed',
+          source: 'worker',
+          severity: 'info',
+          project_id: projectId,
+          task_id: taskId ?? undefined,
+          run_id: runId,
+          step_id: stepId,
+          payload: { tool: 'github.pr.create', url: prRes.url, artifact_id: prArtId }
+        });
+      } else {
+        const prErrId = await writeArtifact({ db, projectId, runId, stepId, kind: 'stderr', name: 'github pr create failed', content: String(prRes.error) });
+        await appendEventRow(db, {
+          id: newId('evt'),
+          ts: nowIso(),
+          seq: seq++,
+          type: 'tool.call.failed',
+          source: 'worker',
+          severity: 'warn',
+          project_id: projectId,
+          task_id: taskId ?? undefined,
+          run_id: runId,
+          step_id: stepId,
+          payload: { tool: 'github.pr.create', error: prRes.error, stderr_artifact_id: prErrId }
+        });
+      }
+
+      await db.update(runs).set({ status: 'succeeded', finishedAt: new Date() }).where(eq(runs.id, runId));
+      await appendEventRow(db, {
+        id: newId('evt'),
+        ts: nowIso(),
+        seq: seq++,
+        type: 'run.completed',
+        source: 'worker',
+        severity: 'info',
+        project_id: projectId,
+        task_id: taskId ?? undefined,
+        run_id: runId,
+        payload: { message: 'Run completed (auto-apply + checks + commit + PR)' }
+      });
+
+      return;
+      // AUTO_APPLY_END
       }
     }
   }
