@@ -26,14 +26,15 @@ async function runCmd(cwd: string, cmd: string, timeoutMs = 10 * 60 * 1000) {
   const dec = policyCheckCommand(cmd);
   if (!dec.ok) return { exitCode: 126, stdout: '', stderr: `[policy] ${dec.reason}` };
 
-  const [bin, ...args] = cmd.split(/\s+/);
   return await new Promise<{ exitCode: number; stdout: string; stderr: string }>((resolve) => {
-    const child = spawn(bin!, args, { cwd, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
+    // Use a shell so quoting works (git commit -m "...", etc).
+    const child = spawn('bash', ['-lc', cmd], { cwd, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
 
     const t = setTimeout(() => {
-      stderr += `\n[api] timeout after ${timeoutMs}ms`;
+      stderr += `
+[api] timeout after ${timeoutMs}ms`;
       child.kill('SIGKILL');
     }, timeoutMs);
 
@@ -47,10 +48,12 @@ async function runCmd(cwd: string, cmd: string, timeoutMs = 10 * 60 * 1000) {
 
     child.on('error', (err) => {
       clearTimeout(t);
-      resolve({ exitCode: 1, stdout, stderr: `${stderr}\n${String(err)}` });
+      resolve({ exitCode: 1, stdout, stderr: `${stderr}
+${String(err)}` });
     });
   });
 }
+
 
 async function writeArtifact({
   db,
