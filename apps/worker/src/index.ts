@@ -5,11 +5,11 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { makeDb } from '@ocdash/db/client';
-import { artifacts, events, runs, tasks } from '@ocdash/db/schema';
+import { artifacts, events, projects, runs, tasks } from '@ocdash/db/schema';
 import { newId, extractUnifiedDiffFromText, wrapHunkAsFilePatch, policyCheckCommand, policyCheckPath } from '@ocdash/shared';
 import type { OcdashEvent } from '@ocdash/shared';
 import { requireEnv } from './env.js';
-import { ensureProjectWorkspace } from './workspaces.js';
+import { prepareWorkspaceForProject } from './workspaces.js';
 import { opencodeRun } from './opencode.js';
 
 const DATABASE_URL = requireEnv('DATABASE_URL');
@@ -172,6 +172,10 @@ async function processRun(db: any, runId: string) {
   // If someone cancelled it while queued, skip.
   if (runRow?.status === 'cancelled') return;
 
+  // Load project config (local_path/repo_url/etc)
+  const projRows = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
+  const proj = projRows[0];
+
   let taskTitle = '';
   let taskBody = '';
   if (taskId) {
@@ -215,10 +219,41 @@ async function processRun(db: any, runId: string) {
     task_id: taskId ?? undefined,
     run_id: runId,
     step_id: stepId,
-    payload: { step: { name: 'opencode.run', kind: 'tool' }, message: 'Running OpenCode' }
+    payload: { step: { name: 'opencode.run', kind: 'tool' }, message: 'Preparing workspace' }
   });
 
-  const ws = await ensureProjectWorkspace({ root: WORKSPACES_ROOT, projectId });
+  const prep = await prepareWorkspaceForProject({
+    root: WORKSPACES_ROOT,
+    project: {
+      id: projectId,
+      localPath: proj?.localPath,
+      repoUrl: proj?.repoUrl,
+      defaultBranch: proj?.defaultBranch
+    }
+  });
+
+  const ws = prep.workspace;
+
+  await appendEventRow(db, {
+    id: newId('evt'),
+    ts: nowIso(),
+    seq: seq++,
+    type: 'run.step.progress',
+    source: 'worker',
+    severity: 'info',
+    project_id: projectId,
+    task_id: taskId ?? undefined,
+    run_id: runId,
+    step_id: stepId,
+    payload: {
+      message: `Workspace ready (${prep.mode}) at ${ws}`,
+      workspace_mode: prep.mode,
+      local_path: proj?.localPath ?? null,
+      repo_url: proj?.repoUrl ?? null,
+      default_branch: proj?.defaultBranch ?? null
+    }
+  });
+
   await ensureGitRepo(ws);
   await ensureReadme(ws);
 

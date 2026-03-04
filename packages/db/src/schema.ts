@@ -29,6 +29,17 @@ export const runStatusEnum = pgEnum('run_status', [
 export const projects = pgTable('projects', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),
+
+  // Phase 4: real project sources
+  // If set, the worker will mirror/copy from this local path into the workspace on each run.
+  localPath: text('local_path'),
+
+  // If set, the worker will clone/pull this repo URL into the workspace.
+  repoUrl: text('repo_url'),
+
+  // Optional branch for repoUrl projects (default: main)
+  defaultBranch: text('default_branch'),
+
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
 });
 
