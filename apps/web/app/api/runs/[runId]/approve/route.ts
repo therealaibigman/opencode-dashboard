@@ -151,6 +151,15 @@ async function ensureGitRepo(ws: string) {
   await runCmd(ws, 'git config user.name ocdash');
 }
 
+async function fileExists(p: string) {
+  try {
+    await fs.stat(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function POST(_req: Request, { params }: { params: Promise<{ runId: string }> }) {
   const { runId } = await params;
   const url = process.env.DATABASE_URL;
@@ -244,7 +253,11 @@ export async function POST(_req: Request, { params }: { params: Promise<{ runId:
 
       await fs.writeFile(readmePath, next, 'utf8');
       method = 'manual-append-readme';
-      applyRes = { exitCode: 0, stdout: `[api] applied README.md changes by appending ${added.length} line(s)`, stderr: '' };
+      applyRes = {
+        exitCode: 0,
+        stdout: `[api] applied README.md changes by appending ${added.length} line(s)`,
+        stderr: ''
+      };
     }
 
     const applyOutId = await writeArtifact({
@@ -291,34 +304,56 @@ export async function POST(_req: Request, { params }: { params: Promise<{ runId:
       );
     }
 
-    // checks
-    const cmds = ['npm test', 'npm run lint', 'npm run typecheck'];
-    for (const cmd of cmds) {
-      const res = await runCmd(ws, cmd);
-      const outId = await writeArtifact({
+    // checks (skip if no package.json)
+    const hasPkg = await fileExists(path.join(ws, 'package.json'));
+    if (!hasPkg) {
+      const skipId = await writeArtifact({
         db,
         projectId: r.projectId,
         runId: rid,
         stepId,
         kind: 'stdout',
-        name: `${cmd} stdout`,
-        content: res.stdout
+        name: 'checks skipped',
+        content: '[api] No package.json in workspace; skipping npm checks'
       });
-      const errId = await writeArtifact({
-        db,
+
+      await appendProjectEvent({
+        databaseUrl: url,
         projectId: r.projectId,
+        taskId: r.taskId ?? null,
         runId: rid,
-        stepId,
-        kind: 'stderr',
-        name: `${cmd} stderr`,
-        content: res.stderr
+        type: 'run.step.progress',
+        payload: { message: 'No package.json in workspace; skipping npm checks', artifact_id: skipId }
       });
-      if (res.exitCode !== 0) {
-        await db.update(runs).set({ status: 'failed', finishedAt: new Date() }).where(eq(runs.id, rid));
-        return NextResponse.json(
-          { ok: false, error: `${cmd} failed`, stdout_artifact_id: outId, stderr_artifact_id: errId },
-          { status: 500 }
-        );
+    } else {
+      const cmds = ['npm test', 'npm run lint', 'npm run typecheck'];
+      for (const cmd of cmds) {
+        const res = await runCmd(ws, cmd);
+        const outId = await writeArtifact({
+          db,
+          projectId: r.projectId,
+          runId: rid,
+          stepId,
+          kind: 'stdout',
+          name: `${cmd} stdout`,
+          content: res.stdout
+        });
+        const errId = await writeArtifact({
+          db,
+          projectId: r.projectId,
+          runId: rid,
+          stepId,
+          kind: 'stderr',
+          name: `${cmd} stderr`,
+          content: res.stderr
+        });
+        if (res.exitCode !== 0) {
+          await db.update(runs).set({ status: 'failed', finishedAt: new Date() }).where(eq(runs.id, rid));
+          return NextResponse.json(
+            { ok: false, error: `${cmd} failed`, stdout_artifact_id: outId, stderr_artifact_id: errId },
+            { status: 500 }
+          );
+        }
       }
     }
 
