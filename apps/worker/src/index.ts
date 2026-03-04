@@ -57,6 +57,83 @@ async function getNextSeq(db: any, runId: string): Promise<number> {
   return (res?.[0]?.max ?? 0) + 1;
 }
 
+const TASK_ORDER: Array<'inbox' | 'planned' | 'in_progress' | 'blocked' | 'review' | 'done'> = [
+  'inbox',
+  'planned',
+  'in_progress',
+  'blocked',
+  'review',
+  'done'
+];
+
+function isLaterOrEqualTaskStatus(current: string, next: string) {
+  const ci = TASK_ORDER.indexOf(current as any);
+  const ni = TASK_ORDER.indexOf(next as any);
+  if (ci === -1 || ni === -1) return false;
+  return ni <= ci;
+}
+
+async function maybeUpdateTaskStatus({
+  db,
+  projectId,
+  taskId,
+  nextStatus
+}: {
+  db: any;
+  projectId: string;
+  taskId: string | null;
+  nextStatus: 'inbox' | 'planned' | 'in_progress' | 'blocked' | 'review' | 'done';
+}) {
+  if (!taskId) return;
+
+  const rows = await db
+    .select({ status: tasks.status, archivedAt: tasks.archivedAt })
+    .from(tasks)
+    .where(eq(tasks.id, taskId))
+    .limit(1);
+
+  if (!rows.length) return;
+  const cur = String(rows[0]!.status ?? '');
+  const archivedAt = rows[0]!.archivedAt;
+  if (archivedAt) return;
+  if (cur === 'done') return;
+
+  // blocked is special: always set (unless done/archived)
+  if (nextStatus === 'blocked') {
+    if (cur !== 'blocked') {
+      await db.update(tasks).set({ status: nextStatus, updatedAt: new Date() }).where(eq(tasks.id, taskId));
+      await appendEventRow(db, {
+        id: newId('evt'),
+        ts: nowIso(),
+        seq: 0,
+        type: 'task.status.changed',
+        source: 'worker',
+        severity: 'info',
+        project_id: projectId,
+        task_id: taskId,
+        payload: { task_id: taskId, status: nextStatus }
+      });
+    }
+    return;
+  }
+
+  // Only move forwards in the lifecycle.
+  if (isLaterOrEqualTaskStatus(cur, nextStatus)) return;
+
+  await db.update(tasks).set({ status: nextStatus, updatedAt: new Date() }).where(eq(tasks.id, taskId));
+  await appendEventRow(db, {
+    id: newId('evt'),
+    ts: nowIso(),
+    seq: 0,
+    type: 'task.status.changed',
+    source: 'worker',
+    severity: 'info',
+    project_id: projectId,
+    task_id: taskId,
+    payload: { task_id: taskId, status: nextStatus }
+  });
+}
+
 function clipPreview(s: string, max = 900) {
   if (!s) return '';
   return s.length > max ? `${s.slice(0, max)}\n…(truncated)…` : s;
@@ -233,6 +310,15 @@ async function processRun(db: any, runId: string) {
     run_id: runId,
     payload: { message: 'Run started', kind, worker_id: WORKER_ID }
   });
+
+  // Task lifecycle projection
+  await maybeUpdateTaskStatus({
+    db,
+    projectId,
+    taskId,
+    nextStatus: kind === 'plan' ? 'planned' : 'in_progress'
+  });
+
 
   const stepId = 'stp_opencode_run';
 
@@ -521,6 +607,10 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
         payload: { reason: v && !v.ok ? `plan approval required (invalid format: ${v.error})` : 'plan approval required', plan_artifact_id: planArtifactId }
       });
 
+        if (kind === 'execute') {
+          await maybeUpdateTaskStatus({ db, projectId, taskId, nextStatus: 'review' });
+        }
+
         await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: 'Approval required. Approve or reject in the dashboard to continue.' });
       return;
     }
@@ -538,6 +628,8 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
       run_id: runId,
       payload: { message: 'Plan run failed: no json block produced' }
     });
+
+        await maybeUpdateTaskStatus({ db, projectId, taskId, nextStatus: 'blocked' });
 
         await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: 'Run failed. Check timeline/artifacts for details.' });
     return;
@@ -560,6 +652,10 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
       run_id: runId,
       payload: { reason: 'OC_DASH_REQUIRE_APPROVAL=1 but no diff produced', stdout_artifact_id: stdoutId }
     });
+
+        if (kind === 'execute') {
+          await maybeUpdateTaskStatus({ db, projectId, taskId, nextStatus: 'review' });
+        }
 
         await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: 'Approval required. Approve or reject in the dashboard to continue.' });
     return;
@@ -586,6 +682,10 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
           run_id: runId,
           payload: { reason: 'diff block was empty', stdout_artifact_id: stdoutId }
         });
+
+        if (kind === 'execute') {
+          await maybeUpdateTaskStatus({ db, projectId, taskId, nextStatus: 'review' });
+        }
 
         await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: 'Approval required. Approve or reject in the dashboard to continue.' });
         return;
@@ -630,6 +730,10 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
           payload: { reason: 'OC_DASH_REQUIRE_APPROVAL=1', patch_artifact_id: patchArtifactId }
         });
 
+        if (kind === 'execute') {
+          await maybeUpdateTaskStatus({ db, projectId, taskId, nextStatus: 'review' });
+        }
+
         await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: 'Approval required. Approve or reject in the dashboard to continue.' });
         return;
       }
@@ -652,6 +756,10 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
             run_id: runId,
             payload: { reason: dec.reason, patch_artifact_id: patchArtifactId }
           });
+
+        if (kind === 'execute') {
+          await maybeUpdateTaskStatus({ db, projectId, taskId, nextStatus: 'review' });
+        }
 
         await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: 'Approval required. Approve or reject in the dashboard to continue.' });
 
@@ -884,6 +992,19 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
         payload: { message: 'Run completed (auto-apply + checks + commit + PR)' }
       });
 
+        // Task lifecycle projection: after success
+        if (kind === 'execute') {
+          const pr = await db
+            .select({ prUrl: runs.prUrl, prState: runs.prState })
+            .from(runs)
+            .where(eq(runs.id, runId))
+            .limit(1);
+          const prUrl = pr?.[0]?.prUrl ? String(pr[0].prUrl) : '';
+          const prState = pr?.[0]?.prState ? String(pr[0].prState) : '';
+          const next = prUrl ? 'review' : prState === 'pushed' ? 'done' : 'review';
+          await maybeUpdateTaskStatus({ db, projectId, taskId, nextStatus: next });
+        }
+
         await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: `Run completed. ${runRow?.prUrl ? 'PR: ' + runRow.prUrl : ''}`.trim() });
 
       return;
@@ -906,6 +1027,19 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
       payload: { message: 'Run completed (opencode)' }
     });
 
+        // Task lifecycle projection: after success
+        if (kind === 'execute') {
+          const pr = await db
+            .select({ prUrl: runs.prUrl, prState: runs.prState })
+            .from(runs)
+            .where(eq(runs.id, runId))
+            .limit(1);
+          const prUrl = pr?.[0]?.prUrl ? String(pr[0].prUrl) : '';
+          const prState = pr?.[0]?.prState ? String(pr[0].prState) : '';
+          const next = prUrl ? 'review' : prState === 'pushed' ? 'done' : 'review';
+          await maybeUpdateTaskStatus({ db, projectId, taskId, nextStatus: next });
+        }
+
         await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: `Run completed. ${runRow?.prUrl ? 'PR: ' + runRow.prUrl : ''}`.trim() });
 
     await db.update(runs).set({ status: 'succeeded', finishedAt: new Date() }).where(eq(runs.id, runId));
@@ -922,6 +1056,8 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
       run_id: runId,
       payload: { message: 'Run failed (opencode)' }
     });
+
+        await maybeUpdateTaskStatus({ db, projectId, taskId, nextStatus: 'blocked' });
 
         await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: 'Run failed. Check timeline/artifacts for details.' });
 
