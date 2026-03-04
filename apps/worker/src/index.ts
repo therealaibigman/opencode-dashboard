@@ -215,7 +215,23 @@ async function createGithubPr({
 
   const cmd = `gh pr create --base ${baseBranch} --head ${branch} --title ${JSON.stringify(title)} --body ${JSON.stringify(body)}`;
   const pr = await runCmdShell({ cwd: ws, cmd });
-  if (pr.exitCode !== 0) return { ok: false, error: pr.stderr || pr.stdout || 'gh pr create failed' };
+
+  if (pr.exitCode !== 0) {
+    // If PR already exists (or creation failed for transient reasons), try to discover it.
+    const again = await runCmdShell({ cwd: ws, cmd: `gh pr list --head ${branch} --state open --json url --limit 1` });
+    if (again.exitCode === 0) {
+      try {
+        const arr = JSON.parse(again.stdout || '[]');
+        if (Array.isArray(arr) && arr[0]?.url) {
+          return { ok: true, url: String(arr[0].url), branch };
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    return { ok: false, error: pr.stderr || pr.stdout || 'gh pr create failed' };
+  }
 
   const url = (pr.stdout.trim().split(/\s+/).find((x) => x.startsWith('http')) ?? '').trim();
   if (!url) return { ok: false, error: `PR created but URL not detected: ${pr.stdout.trim()}` };

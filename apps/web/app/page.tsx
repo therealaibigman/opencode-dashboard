@@ -2,6 +2,7 @@ import { AppShell } from '../components/AppShell';
 import { ProjectProvider } from '../components/ProjectContext';
 import { TopTabs } from '../components/TopTabs';
 import { ChatPanel } from '../components/ChatPanel';
+import { HealthPanel } from '../components/HealthPanel';
 import { KanbanPanel } from '../components/KanbanPanel';
 import { RunsPanel } from '../components/RunsPanel';
 
