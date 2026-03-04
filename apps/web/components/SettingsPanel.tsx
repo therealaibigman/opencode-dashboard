@@ -5,7 +5,7 @@ import { useSettings } from './useSettings';
 
 export function SettingsPanel() {
   const { theme, setTheme } = useTheme();
-  const { settings, setYolo, setModelProfile } = useSettings();
+  const { settings, setYolo, setModelProfile, setRunsPageSize } = useSettings();
 
   return (
     <div className="space-y-4">
@@ -61,6 +61,27 @@ export function SettingsPanel() {
             <div className="mt-1 text-[11px] text-zinc-500">
               Local UI flag. Real approvals are enforced by server env (e.g. <span className="font-mono">OC_DASH_REQUIRE_APPROVAL=1</span>).
             </div>
+          </div>
+        </div>
+      </div>
+
+
+      <div className="rounded-2xl border border-matrix-500/20 bg-black/20 p-3">
+        <div className="mb-2 text-xs font-medium text-matrix-200/90">Lists</div>
+        <div className="grid gap-3 md:grid-cols-2">
+          <div>
+            <div className="mb-2 text-xs text-zinc-400">Runs page size</div>
+            <select
+              value={settings.runsPageSize}
+              onChange={(e) => setRunsPageSize(Number(e.target.value))}
+              className="w-full rounded-lg border border-matrix-500/20 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none"
+            >
+              <option value="25">25</option>
+              <option value="50">50</option>
+              <option value="100">100</option>
+              <option value="200">200</option>
+            </select>
+            <div className="mt-1 text-[11px] text-zinc-500">How many runs to fetch per page.</div>
           </div>
         </div>
       </div>

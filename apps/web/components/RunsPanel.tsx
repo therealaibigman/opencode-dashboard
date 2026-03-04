@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useBasePath } from './useBasePath';
 import { useProject } from './ProjectContext';
+import { useSettings } from './useSettings';
 import { useRouter } from 'next/navigation';
 
 type RunRow = {
@@ -45,15 +46,7 @@ function kindPill(kind: string) {
   return 'bg-black/20 text-zinc-200 ring-matrix-500/15';
 }
 
-function RunButton({
-  r,
-  onOpen,
-  indent
-}: {
-  r: RunRow;
-  onOpen: () => void;
-  indent?: boolean;
-}) {
+function RunButton({ r, onOpen, indent }: { r: RunRow; onOpen: () => void; indent?: boolean }) {
   return (
     <div
       className={
@@ -105,24 +98,34 @@ export function RunsPanel() {
   const BASE = useBasePath();
   const router = useRouter();
   const { selectedProjectId: projectId } = useProject();
+  const { settings } = useSettings();
+
+  const [runs, setRuns] = useState<RunRow[]>([]);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   const api = useMemo(
     () => ({
-      runs: `${BASE}/api/runs?project_id=${encodeURIComponent(projectId)}`
+      runs: (cursor?: string | null) => {
+        const qs = new URLSearchParams();
+        qs.set('project_id', projectId);
+        qs.set('limit', String(settings.runsPageSize || 100));
+        if (cursor) qs.set('cursor', cursor);
+        return `${BASE}/api/runs?${qs.toString()}`;
+      }
     }),
-    [BASE, projectId]
+    [BASE, projectId, settings.runsPageSize]
   );
-
-  const [runs, setRuns] = useState<RunRow[]>([]);
-  const [err, setErr] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
 
   async function refresh() {
     setErr(null);
     setLoading(true);
     try {
-      const data = await j<{ runs: RunRow[] }>(await fetch(api.runs, { cache: 'no-store' }));
+      const data = await j<{ runs: RunRow[]; next_cursor: string | null }>(await fetch(api.runs(null), { cache: 'no-store' }));
       setRuns(data.runs);
+      setNextCursor(data.next_cursor);
     } catch (e: any) {
       setErr(String(e?.message ?? e));
     } finally {
@@ -130,10 +133,25 @@ export function RunsPanel() {
     }
   }
 
+  async function loadMore() {
+    if (!nextCursor) return;
+    setLoadingMore(true);
+    setErr(null);
+    try {
+      const data = await j<{ runs: RunRow[]; next_cursor: string | null }>(await fetch(api.runs(nextCursor), { cache: 'no-store' }));
+      setRuns((prev) => [...prev, ...(data.runs ?? [])]);
+      setNextCursor(data.next_cursor);
+    } catch (e: any) {
+      setErr(String(e?.message ?? e));
+    } finally {
+      setLoadingMore(false);
+    }
+  }
+
   useEffect(() => {
     refresh().catch(() => void 0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [api.runs]);
+  }, [projectId, settings.runsPageSize]);
 
   const childrenByParent = new Map<string, RunRow[]>();
   for (const r of runs) {
@@ -154,12 +172,15 @@ export function RunsPanel() {
           <div className="rounded-lg border border-matrix-500/20 bg-black/25 px-3 py-2 text-sm text-zinc-100">{projectId}</div>
         </div>
 
-        <button
-          onClick={() => refresh()}
-          className="rounded-lg bg-black/25 px-3 py-2 text-sm text-zinc-200 ring-1 ring-matrix-500/20 hover:bg-black/35"
-        >
-          Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => refresh()}
+            className="rounded-lg bg-black/25 px-3 py-2 text-sm text-zinc-200 ring-1 ring-matrix-500/20 hover:bg-black/35"
+          >
+            Refresh
+          </button>
+          <div className="text-[11px] text-zinc-500">page size: {settings.runsPageSize || 100}</div>
+        </div>
       </div>
 
       {err ? <div className="rounded-xl border border-red-500/30 bg-red-950/30 p-3 text-sm text-red-100">{err}</div> : null}
@@ -188,9 +209,21 @@ export function RunsPanel() {
             );
           })}
         </div>
-      </div>
 
-      <div className="text-[10px] text-zinc-500">source: {api.runs}</div>
+        {nextCursor ? (
+          <div className="mt-3">
+            <button
+              onClick={() => loadMore()}
+              disabled={loadingMore}
+              className="w-full rounded-lg bg-black/25 px-3 py-2 text-sm text-zinc-200 ring-1 ring-matrix-500/20 hover:bg-black/35 disabled:opacity-60"
+            >
+              {loadingMore ? 'Loading…' : 'Load more'}
+            </button>
+          </div>
+        ) : runs.length ? (
+          <div className="mt-3 text-center text-[11px] text-zinc-500">End.</div>
+        ) : null}
+      </div>
     </div>
   );
 }

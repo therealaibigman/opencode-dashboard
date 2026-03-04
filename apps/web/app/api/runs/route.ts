@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, sql } from 'drizzle-orm';
 
 import { makeDb } from '@ocdash/db/client';
 import { artifacts, runs, threads } from '@ocdash/db/schema';
@@ -15,6 +15,8 @@ export async function GET(req: Request) {
   const sp = new URL(req.url).searchParams;
   const projectId = sp.get('project_id')?.trim();
   const taskId = sp.get('task_id')?.trim();
+  const limit = Math.min(Math.max(Number(sp.get('limit') ?? 100) || 100, 1), 500);
+  const cursor = (sp.get('cursor') ?? '').trim();
 
   if (!projectId) return NextResponse.json({ error: 'project_id is required' }, { status: 400 });
 
@@ -23,9 +25,31 @@ export async function GET(req: Request) {
     const where = taskId
       ? and(eq(runs.projectId, projectId), eq(runs.taskId, taskId))
       : eq(runs.projectId, projectId);
+    let where2 = where;
+    if (cursor && cursor.includes('|')) {
+      const [ts, id] = cursor.split('|');
+      const d = new Date(ts);
+      if (!Number.isNaN(d.getTime()) && id) {
+        where2 = and(where2, sql`(${runs.createdAt}, ${runs.id}) < (${d.toISOString()}::timestamptz, ${id})`);
+      }
+    }
 
-    const rows = await db.select().from(runs).where(where).orderBy(desc(runs.createdAt)).limit(200);
-    return NextResponse.json({ runs: rows });
+
+
+    const rows = await db
+      .select()
+      .from(runs)
+      .where(where2)
+      .orderBy(desc(runs.createdAt), desc(runs.id))
+      .limit(limit + 1);
+
+    const hasMore = rows.length > limit;
+    const page = hasMore ? rows.slice(0, limit) : rows;
+
+    const last = page.length ? page[page.length - 1] : null;
+    const next_cursor = hasMore && last ? `${new Date(last.createdAt).toISOString()}|${last.id}` : null;
+
+    return NextResponse.json({ runs: page, next_cursor });
   } finally {
     await pool.end();
   }
