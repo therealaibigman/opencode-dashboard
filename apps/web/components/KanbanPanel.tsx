@@ -364,7 +364,7 @@ export function KanbanPanel() {
         body: JSON.stringify({ project_id: projectId, task_id: t.id, model_profile: 'balanced' })
       });
       const data = await j<{ run: { id: string } }>(res);
-      router.push(`/runs/${encodeURIComponent(data.run.id)}`);
+      router.push(`${BASE}/runs/${encodeURIComponent(data.run.id)}`);
     } catch (e: any) {
       setErr(String(e?.message ?? e));
     }

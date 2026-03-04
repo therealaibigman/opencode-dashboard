@@ -241,7 +241,7 @@ export function RunDetails({ runId }: { runId: string }) {
         const data = await j<{ ok: boolean; execute_run_id: string }>(
           await fetch(api.approvePlan, { method: 'POST' })
         );
-        window.location.href = `/runs/${encodeURIComponent(data.execute_run_id)}`;
+        window.location.href = `${BASE}/runs/${encodeURIComponent(data.execute_run_id)}`;
       } catch (e: any) {
         setErr(String(e?.message ?? e));
       } finally {
@@ -288,7 +288,7 @@ export function RunDetails({ runId }: { runId: string }) {
         })
       });
       const data = await j<{ run: { id: string } }>(res);
-      window.location.href = `/runs/${encodeURIComponent(data.run.id)}`;
+      window.location.href = `${BASE}/runs/${encodeURIComponent(data.run.id)}`;
     } catch (e: any) {
       setErr(String(e?.message ?? e));
     } finally {
