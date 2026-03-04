@@ -29,6 +29,15 @@ export function extractUnifiedDiffFromText(text: string): PatchExtract | null {
   return { patchText, touchedPaths: [...touchedPaths], hasGitHeaders };
 }
 
+export function extractTouchedPaths(patchText: string): string[] {
+  const touched = new Set<string>();
+  for (const ln of patchText.split('\n')) {
+    const m = ln.match(/^diff --git a\/(.+?) b\/(.+)$/);
+    if (m?.[2]) touched.add(m[2]);
+  }
+  return [...touched];
+}
+
 export function wrapHunkAsFilePatch({ patchText, filePath }: { patchText: string; filePath: string }) {
   const hunks = patchText.trimEnd();
   return [

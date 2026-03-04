@@ -8,6 +8,7 @@ import { makeDb } from '@ocdash/db/client';
 import { artifacts, runs } from '@ocdash/db/schema';
 import {
   extractAddedLines,
+  extractTouchedPaths,
   policyCheckCommand,
   policyCheckPath,
   wrapHunkAsFilePatch
@@ -19,15 +20,6 @@ export const runtime = 'nodejs';
 
 const WORKSPACES_ROOT =
   process.env.PROJECT_WORKSPACES_ROOT ?? '/home/exedev/.openclaw/workspace/opencode-workspaces';
-
-function extractTouchedPaths(patchText: string): string[] {
-  const touched = new Set<string>();
-  for (const ln of patchText.split('\n')) {
-    const m = ln.match(/^diff --git a\/(.+?) b\/(.+)$/);
-    if (m?.[2]) touched.add(m[2]);
-  }
-  return [...touched];
-}
 
 async function runCmd(cwd: string, cmd: string, timeoutMs = 10 * 60 * 1000) {
   const dec = policyCheckCommand(cmd);
