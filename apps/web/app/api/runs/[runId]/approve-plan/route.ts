@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { and, eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 
 import { makeDb } from '@ocdash/db/client';
 import { artifacts, runs } from '@ocdash/db/schema';
@@ -29,14 +29,17 @@ export async function POST(_req: Request, { params }: { params: Promise<{ runId:
       return NextResponse.json({ error: `run is not in needs_approval (status=${r.status})` }, { status: 400 });
     }
 
-    // Ensure plan artifact exists (optional sanity)
+    // Ensure plan artifact exists.
     const planRows = await db
-      .select({ id: artifacts.id })
+      .select()
       .from(artifacts)
       .where(and(eq(artifacts.runId, rid), eq(artifacts.kind, 'plan')))
+      .orderBy(desc(artifacts.createdAt))
       .limit(1);
+
     if (!planRows.length) return NextResponse.json({ error: 'missing plan artifact' }, { status: 400 });
 
+    const planArtifact = planRows[0]!;
     const execId = newId('run');
 
     await db.insert(runs).values({
@@ -46,6 +49,29 @@ export async function POST(_req: Request, { params }: { params: Promise<{ runId:
       modelProfile: r.modelProfile,
       kind: 'execute',
       status: 'queued'
+    });
+
+    // Copy plan artifact onto the execute run so the worker can use it as context.
+    const copiedPlanId = newId('art');
+    const copiedStepId = 'stp_plan_approval';
+
+    await db.insert(artifacts).values({
+      id: copiedPlanId,
+      projectId: r.projectId,
+      runId: execId,
+      stepId: copiedStepId,
+      kind: 'plan',
+      name: 'approved plan',
+      contentText: String(planArtifact.contentText ?? '')
+    });
+
+    await appendProjectEvent({
+      databaseUrl: url,
+      projectId: r.projectId,
+      taskId: r.taskId ?? null,
+      runId: execId,
+      type: 'artifact.created',
+      payload: { artifact: { id: copiedPlanId, kind: 'plan', name: 'approved plan' }, from_plan_run_id: rid }
     });
 
     await appendProjectEvent({

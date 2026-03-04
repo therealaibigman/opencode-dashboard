@@ -1,6 +1,6 @@
 import './env.js';
 
-import { and, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, sql } from 'drizzle-orm';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -12,7 +12,8 @@ import {
   wrapHunkAsFilePatch,
   policyCheckCommand,
   policyCheckPath,
-  prepareWorkspaceForProject
+  prepareWorkspaceForProject,
+  validatePlanJson
 } from '@ocdash/shared';
 import type { OcdashEvent } from '@ocdash/shared';
 import { requireEnv } from './env.js';
@@ -256,12 +257,26 @@ async function processRun(db: any, runId: string) {
   await ensureGitRepo(ws);
   await ensureReadme(ws);
 
-  const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Project ${projectId}`;
+    // If an approved plan is attached to this execute run, include it as context.
+  let approvedPlanJson = '';
+  try {
+    const planRows = await db
+      .select({ contentText: artifacts.contentText })
+      .from(artifacts)
+      .where(and(eq(artifacts.runId, runId), eq(artifacts.kind, 'plan')))
+      .orderBy(desc(artifacts.createdAt))
+      .limit(1);
+    if (planRows.length) approvedPlanJson = String(planRows[0]!.contentText ?? '').trim();
+  } catch {
+    // ignore
+  }
+
+const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Project ${projectId}`;
 
   const msg =
     kind === 'plan'
       ? `${baseTask}\n\nYou are planning work. Output a plan as JSON inside a fenced \`\`\`json block with:\n{\n  \"summary\": string,\n  \"steps\": [{\"title\": string, \"details\": string, \"risk\": \"low\"|\"med\"|\"high\"}],\n  \"files\": string[],\n  \"commands\": string[]\n}\n\nDo NOT output a diff. Do NOT execute anything.\n`
-      : `${baseTask}\n\nReturn a unified diff in a fenced \`\`\`diff block if code changes are needed. Include full diff headers (diff --git, ---/+++).\n\nDo the next best action.`;
+      : `${baseTask}\n\n${approvedPlanJson ? `Approved plan (JSON):\n\n\`\`\`json\n${approvedPlanJson}\n\`\`\`\n\nFollow the approved plan.\n\n` : ''}Return a unified diff in a fenced \`\`\`diff block if code changes are needed. Include full diff headers (diff --git, ---/+++).\n\nDo the next best action.`;
 
   const model = (process.env.OPENCODE_MODEL ?? '').trim() || undefined;
   const timeoutMs = Number(process.env.OPENCODE_TIMEOUT_MS ?? '600000');
@@ -428,6 +443,7 @@ async function processRun(db: any, runId: string) {
     // Extract JSON plan block.
     const m = (result.stdout ?? '').match(/```json\s*([\s\S]*?)```/m);
     const planText = m?.[1]?.trim() ?? '';
+    const v = planText ? validatePlanJson(planText) : null;
     if (planText) {
       const planArtifactId = await writeArtifact({
         db,
@@ -464,7 +480,7 @@ async function processRun(db: any, runId: string) {
         project_id: projectId,
         task_id: taskId ?? undefined,
         run_id: runId,
-        payload: { reason: 'plan approval required', plan_artifact_id: planArtifactId }
+        payload: { reason: v && !v.ok ? `plan approval required (invalid format: ${v.error})` : 'plan approval required', plan_artifact_id: planArtifactId }
       });
       return;
     }
