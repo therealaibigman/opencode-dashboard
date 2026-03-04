@@ -15,6 +15,19 @@ body {
   height: 100%;
 }
 
+/* Theme tokens */
+:root {
+  --panel: rgba(0, 0, 0, 0.22);
+  --panel-2: rgba(0, 0, 0, 0.30);
+  --muted: rgba(244, 244, 245, 0.72);
+}
+
+html.light {
+  --panel: rgba(255, 255, 255, 0.74);
+  --panel-2: rgba(255, 255, 255, 0.86);
+  --muted: rgba(24, 24, 27, 0.72);
+}
+
 /* Dark theme */
 html.dark body {
   background-color: #05070a;
@@ -40,6 +53,63 @@ html.light body {
   background-attachment: fixed;
 }
 
+/* Readability upgrades for light theme */
+html.light .text-zinc-100,
+html.light .text-zinc-200,
+html.light .text-zinc-300 {
+  color: rgb(24 24 27) !important;
+}
+
+html.light .text-zinc-400,
+html.light .text-zinc-500 {
+  color: rgb(63 63 70) !important;
+}
+
+html.light .bg-black\/15,
+html.light .bg-black\/20,
+html.light .bg-black\/25,
+html.light .bg-black\/30,
+html.light .bg-black\/35,
+html.light .bg-black\/40,
+html.light .bg-black\/50,
+html.light .bg-bg-2\/40,
+html.light .bg-bg-2\/60,
+html.light .bg-bg-2\/90 {
+  background-color: var(--panel) !important;
+}
+
+html.light .hover\:bg-black\/30:hover,
+html.light .hover\:bg-black\/35:hover,
+html.light .hover\:bg-black\/40:hover {
+  background-color: var(--panel-2) !important;
+}
+
+html.light .ring-matrix-500\/15,
+html.light .ring-matrix-500\/20,
+html.light .ring-matrix-500\/30,
+html.light .ring-matrix-500\/40,
+html.light .ring-matrix-500\/50 {
+  --tw-ring-color: rgba(0, 120, 30, 0.35) !important;
+}
+
+html.light .border-matrix-500\/10,
+html.light .border-matrix-500\/15,
+html.light .border-matrix-500\/20,
+html.light .border-matrix-500\/30 {
+  border-color: rgba(0, 120, 30, 0.25) !important;
+}
+
+html.light input,
+html.light select,
+html.light textarea {
+  color: rgb(24 24 27) !important;
+}
+
+html.light input::placeholder,
+html.light textarea::placeholder {
+  color: rgba(24, 24, 27, 0.55) !important;
+}
+
 /* Subtle scanlines, fixed to viewport (no tiling artefacts) */
 body::before {
   content: '';
@@ -59,5 +129,5 @@ body::before {
 }
 
 html.light body::before {
-  opacity: 0.18;
+  opacity: 0.12;
 }
