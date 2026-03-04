@@ -958,6 +958,36 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
         return;
       }
 
+      // Pipeline step: checks
+      let checksStepId: string | null = null;
+      if (pipelineId) {
+        checksStepId = newId('stp');
+        await db.insert(runSteps).values({
+          id: checksStepId,
+          projectId,
+          runId,
+          name: 'checks',
+          status: 'running',
+          model: null,
+          startedAt: new Date(),
+          inputJson: {}
+        });
+        await appendEventRow(db, {
+          id: newId('evt'),
+          ts: nowIso(),
+          seq: seq++,
+          type: 'run.step.started',
+          source: 'worker',
+          severity: 'info',
+          project_id: projectId,
+          task_id: taskId ?? undefined,
+          thread_id: threadId ?? undefined,
+          run_id: runId,
+          step_id: checksStepId,
+          payload: { name: 'checks' }
+        });
+      }
+
       const autoCmdsRaw = String(process.env.OC_DASH_AUTO_COMMANDS ?? '').trim();
       const cmds = autoCmdsRaw
         ? autoCmdsRaw.split(',').map((x) => x.trim()).filter(Boolean)
@@ -1003,6 +1033,24 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
         }
       }
 
+      if (checksStepId) {
+        await db.update(runSteps).set({ status: 'succeeded', finishedAt: new Date() }).where(eq(runSteps.id, checksStepId));
+        await appendEventRow(db, {
+          id: newId('evt'),
+          ts: nowIso(),
+          seq: seq++,
+          type: 'run.step.completed',
+          source: 'worker',
+          severity: 'info',
+          project_id: projectId,
+          task_id: taskId ?? undefined,
+          thread_id: threadId ?? undefined,
+          run_id: runId,
+          step_id: checksStepId,
+          payload: { name: 'checks' }
+        });
+      }
+
       await runCmd({ cwd: ws, cmd: 'git add -A' });
       const commitMsg = `ocdash: auto-apply for ${taskId ?? runId}`;
       const commitRes = await runCmd({ cwd: ws, cmd: `git commit -m "${commitMsg.replace(/"/g, "'")}"` });
@@ -1025,6 +1073,36 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
           payload: { message: 'git commit failed', stdout_artifact_id: cOut, stderr_artifact_id: cErr }
         });
         return;
+      }
+
+      // Pipeline step: publish
+      let publishStepId: string | null = null;
+      if (pipelineId) {
+        publishStepId = newId('stp');
+        await db.insert(runSteps).values({
+          id: publishStepId,
+          projectId,
+          runId,
+          name: 'publish',
+          status: 'running',
+          model: null,
+          startedAt: new Date(),
+          inputJson: {}
+        });
+        await appendEventRow(db, {
+          id: newId('evt'),
+          ts: nowIso(),
+          seq: seq++,
+          type: 'run.step.started',
+          source: 'worker',
+          severity: 'info',
+          project_id: projectId,
+          task_id: taskId ?? undefined,
+          thread_id: threadId ?? undefined,
+          run_id: runId,
+          step_id: publishStepId,
+          payload: { name: 'publish' }
+        });
       }
 
       const prTitle = `ocdash: ${taskTitle || taskId || runId}`;
@@ -1098,6 +1176,24 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
           run_id: runId,
           step_id: stepId,
           payload: { tool: 'github.pr.create', error: prRes.error, stderr_artifact_id: prErrId }
+        });
+      }
+
+      if (publishStepId) {
+        await db.update(runSteps).set({ status: 'succeeded', finishedAt: new Date() }).where(eq(runSteps.id, publishStepId));
+        await appendEventRow(db, {
+          id: newId('evt'),
+          ts: nowIso(),
+          seq: seq++,
+          type: 'run.step.completed',
+          source: 'worker',
+          severity: 'info',
+          project_id: projectId,
+          task_id: taskId ?? undefined,
+          thread_id: threadId ?? undefined,
+          run_id: runId,
+          step_id: publishStepId,
+          payload: { name: 'publish' }
         });
       }
 
