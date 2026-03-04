@@ -184,11 +184,17 @@ export function KanbanPanel() {
               {(by[c.key] ?? []).map((t) => (
                 <div
                   key={t.id}
-                  className="rounded-lg border border-matrix-500/15 bg-black/30 p-2 text-xs text-zinc-200"
+                  className="min-w-0 rounded-lg border border-matrix-500/15 bg-black/30 p-2 text-xs text-zinc-200"
                 >
-                  <button onClick={() => setOpenTask(t)} className="block w-full text-left">
-                    <div className="mb-1 line-clamp-2 text-sm text-zinc-100 hover:underline">{t.title}</div>
-                    {t.bodyMd ? <div className="mb-2 text-[11px] text-zinc-400">{t.bodyMd}</div> : null}
+                  <button onClick={() => setOpenTask(t)} className="block w-full min-w-0 text-left">
+                    <div className="mb-1 min-w-0 line-clamp-2 break-words text-sm text-zinc-100 hover:underline">
+                      {t.title}
+                    </div>
+                    {t.bodyMd ? (
+                      <div className="mb-2 min-w-0 line-clamp-3 break-words text-[11px] text-zinc-400">
+                        {t.bodyMd}
+                      </div>
+                    ) : null}
                   </button>
 
                   <div className="flex flex-wrap gap-2">
@@ -214,7 +220,7 @@ export function KanbanPanel() {
                     </button>
                   </div>
 
-                  <div className="mt-2 text-[10px] text-zinc-500">{t.id}</div>
+                  <div className="mt-2 min-w-0 break-all text-[10px] text-zinc-500">{t.id}</div>
                 </div>
               ))}
 

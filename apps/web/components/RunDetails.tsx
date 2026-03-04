@@ -65,7 +65,9 @@ export function RunDetails({ runId }: { runId: string }) {
       const r = await j<{ run: RunRow }>(await fetch(api.run, { cache: 'no-store' }));
       setRun(r.run);
 
-      const a = await j<{ artifacts: ArtifactStub[] }>(await fetch(api.artifacts, { cache: 'no-store' }));
+      const a = await j<{ artifacts: ArtifactStub[] }>(
+        await fetch(api.artifacts, { cache: 'no-store' })
+      );
       setArtifacts(a.artifacts);
     } catch (e: any) {
       setErr(String(e?.message ?? e));
@@ -75,7 +77,9 @@ export function RunDetails({ runId }: { runId: string }) {
   }
 
   async function loadArtifact(id: string) {
-    const data = await j<{ artifact: ArtifactFull }>(await fetch(api.artifact(id), { cache: 'no-store' }));
+    const data = await j<{ artifact: ArtifactFull }>(
+      await fetch(api.artifact(id), { cache: 'no-store' })
+    );
     setOpenArtifact(data.artifact);
   }
 
@@ -87,9 +91,9 @@ export function RunDetails({ runId }: { runId: string }) {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="space-y-1">
+        <div className="min-w-0 space-y-1">
           <div className="text-xs text-zinc-400">Run</div>
-          <div className="text-lg font-semibold text-zinc-100">{runId}</div>
+          <div className="min-w-0 break-all text-lg font-semibold text-zinc-100">{runId}</div>
           <a className="text-xs text-matrix-200/90 hover:underline" href={api.home}>
             ← Back to dashboard
           </a>
@@ -120,10 +124,10 @@ export function RunDetails({ runId }: { runId: string }) {
               <div>
                 <span className="text-zinc-400">status:</span> {run.status}
               </div>
-              <div>
+              <div className="min-w-0 break-all">
                 <span className="text-zinc-400">project:</span> {run.projectId}
               </div>
-              <div>
+              <div className="min-w-0 break-all">
                 <span className="text-zinc-400">task:</span> {run.taskId ?? '—'}
               </div>
               <div>
@@ -152,13 +156,13 @@ export function RunDetails({ runId }: { runId: string }) {
                 <button
                   key={a.id}
                   onClick={() => loadArtifact(a.id)}
-                  className="block w-full rounded-lg border border-matrix-500/10 bg-black/20 p-2 text-left hover:bg-black/30"
+                  className="block w-full min-w-0 rounded-lg border border-matrix-500/10 bg-black/20 p-2 text-left hover:bg-black/30"
                 >
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="text-xs text-zinc-100">{a.name}</div>
+                  <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+                    <div className="min-w-0 break-words text-xs text-zinc-100">{a.name}</div>
                     <div className="text-[11px] text-zinc-400">{a.kind}</div>
                   </div>
-                  <div className="mt-1 text-[10px] text-zinc-500">
+                  <div className="mt-1 min-w-0 break-all text-[10px] text-zinc-500">
                     {a.id}
                     {a.step_id ? ` • ${a.step_id}` : ''}
                   </div>
@@ -169,14 +173,14 @@ export function RunDetails({ runId }: { runId: string }) {
 
           {openArtifact ? (
             <div className="mt-3 rounded-xl border border-matrix-500/15 bg-black/25 p-3">
-              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                <div className="text-xs font-medium text-zinc-100">{openArtifact.name}</div>
+              <div className="mb-2 flex min-w-0 flex-wrap items-center justify-between gap-2">
+                <div className="min-w-0 break-words text-xs font-medium text-zinc-100">{openArtifact.name}</div>
                 <div className="text-[11px] text-zinc-400">{openArtifact.kind}</div>
               </div>
               <pre className="max-h-[360px] overflow-auto whitespace-pre-wrap break-words text-[11px] text-zinc-200">
                 {openArtifact.content_text}
               </pre>
-              <div className="mt-2 text-[10px] text-zinc-500">artifact: {openArtifact.id}</div>
+              <div className="mt-2 min-w-0 break-all text-[10px] text-zinc-500">artifact: {openArtifact.id}</div>
             </div>
           ) : null}
         </div>

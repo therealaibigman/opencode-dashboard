@@ -57,7 +57,7 @@ function ToolCallBlock({ e }: { e: Ev }) {
   return (
     <div className="mt-2 space-y-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="text-[11px] text-zinc-200">
+        <div className="min-w-0 break-words text-[11px] text-zinc-200">
           <span className="text-zinc-400">tool:</span> {tool}
         </div>
         {typeof exitCode === 'number' ? (
@@ -79,7 +79,7 @@ function ToolCallBlock({ e }: { e: Ev }) {
           <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words text-[11px] text-zinc-200">
             {stdout?.content_text ?? stdoutPreview ?? ''}
           </pre>
-          {stdoutId ? <div className="mt-1 text-[10px] text-zinc-500">artifact: {stdoutId}</div> : null}
+          {stdoutId ? <div className="mt-1 break-all text-[10px] text-zinc-500">artifact: {stdoutId}</div> : null}
         </details>
       ) : null}
 
@@ -95,7 +95,9 @@ function ToolCallBlock({ e }: { e: Ev }) {
           <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words text-[11px] text-red-100">
             {stderr?.content_text ?? stderrPreview ?? ''}
           </pre>
-          {stderrId ? <div className="mt-1 text-[10px] text-red-200/70">artifact: {stderrId}</div> : null}
+          {stderrId ? (
+            <div className="mt-1 break-all text-[10px] text-red-200/70">artifact: {stderrId}</div>
+          ) : null}
         </details>
       ) : null}
     </div>
@@ -107,10 +109,7 @@ export function RunTimeline({ runId }: { runId: string }) {
   const [events, setEvents] = useState<Ev[]>([]);
   const [status, setStatus] = useState<'connecting' | 'connected' | 'error'>('connecting');
 
-  const url = useMemo(
-    () => `${BASE}/api/runs/${encodeURIComponent(runId)}/events/stream`,
-    [BASE, runId]
-  );
+  const url = useMemo(() => `${BASE}/api/runs/${encodeURIComponent(runId)}/events/stream`, [BASE, runId]);
 
   useEffect(() => {
     setEvents([]);
@@ -155,18 +154,18 @@ export function RunTimeline({ runId }: { runId: string }) {
         {events.length === 0 ? <div className="text-[11px] text-zinc-400">No events yet.</div> : null}
         <div className="space-y-2 pr-1">
           {events.map((e) => (
-            <div key={`${e.id}:${e.seq}`} className="rounded-lg border border-matrix-500/10 bg-black/20 p-2">
+            <div key={`${e.id}:${e.seq}`} className="min-w-0 rounded-lg border border-matrix-500/10 bg-black/20 p-2">
               <div className="flex items-center justify-between gap-2">
                 <div className="text-[11px] text-zinc-300">
                   {fmtTs(e.ts)} <span className="text-zinc-600">#{e.seq}</span>
                 </div>
-                <div className="text-[11px] text-matrix-200/90">{e.type}</div>
+                <div className="min-w-0 break-words text-[11px] text-matrix-200/90">{e.type}</div>
               </div>
 
-              {e.step_id ? <div className="mt-1 text-[10px] text-zinc-500">{e.step_id}</div> : null}
+              {e.step_id ? <div className="mt-1 break-all text-[10px] text-zinc-500">{e.step_id}</div> : null}
 
               {e.payload?.message ? (
-                <div className="mt-1 text-[11px] text-zinc-200">{String(e.payload.message)}</div>
+                <div className="mt-1 min-w-0 break-words text-[11px] text-zinc-200">{String(e.payload.message)}</div>
               ) : null}
 
               {typeof e.payload?.percent === 'number' ? (
