@@ -6,7 +6,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 import { makeDb } from '@ocdash/db/client';
-import { artifacts, events, projects, runs, tasks } from '@ocdash/db/schema';
+import { artifacts, events, messages, projects, runs, tasks, threads } from '@ocdash/db/schema';
 
 import { newId } from '@ocdash/shared';
 import type { OcdashEvent } from '@ocdash/shared';
@@ -92,6 +92,34 @@ async function writeArtifact({
   return id;
 }
 
+async function appendThreadMessage({
+  db,
+  projectId,
+  taskId,
+  threadId,
+  role,
+  content
+}: {
+  db: any;
+  projectId: string;
+  taskId?: string | null;
+  threadId?: string | null;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+}) {
+  if (!threadId) return null;
+  const id = newId('msg');
+  await db.insert(messages).values({
+    id,
+    projectId,
+    threadId,
+    role,
+    contentMd: content
+  });
+  await db.update(threads).set({ updatedAt: new Date() }).where(eq(threads.id, threadId));
+  return id;
+}
+
 async function isRunCancelled(db: any, runId: string): Promise<boolean> {
   const rows = await db.select({ status: runs.status }).from(runs).where(eq(runs.id, runId)).limit(1);
   return rows?.[0]?.status === 'cancelled';
@@ -168,6 +196,7 @@ async function processRun(db: any, runId: string) {
   const runRow = runRows[0];
   const projectId = runRow?.projectId as string | undefined;
   const taskId = (runRow?.taskId as string | null | undefined) ?? null;
+  const threadId = ((runRow as any)?.threadId as string | null | undefined) ?? null;
   const kind = (runRow as any)?.kind ?? 'execute';
 
   if (!projectId) throw new Error(`Run ${runId} missing projectId`);
@@ -190,6 +219,8 @@ async function processRun(db: any, runId: string) {
 
   let seq = await getNextSeq(db, runId);
 
+  await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: `Run started (${kind}).` });
+
   await appendEventRow(db, {
     id: newId('evt'),
     ts: nowIso(),
@@ -204,6 +235,8 @@ async function processRun(db: any, runId: string) {
   });
 
   const stepId = 'stp_opencode_run';
+
+  await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: `Run started (${kind}).` });
 
   await appendEventRow(db, {
     id: newId('evt'),
@@ -230,6 +263,8 @@ async function processRun(db: any, runId: string) {
   });
 
   const ws = prep.workspace;
+
+  await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: `Run started (${kind}).` });
 
   await appendEventRow(db, {
     id: newId('evt'),
@@ -277,6 +312,8 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
 
   const model = (process.env.OPENCODE_MODEL ?? '').trim() || undefined;
   const timeoutMs = Number(process.env.OPENCODE_TIMEOUT_MS ?? '600000');
+
+  await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: `Run started (${kind}).` });
 
   await appendEventRow(db, {
     id: newId('evt'),
@@ -390,6 +427,8 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
     content: result.stderr ?? ''
   });
 
+  await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: `Run started (${kind}).` });
+
   await appendEventRow(db, {
     id: newId('evt'),
     ts: nowIso(),
@@ -403,6 +442,8 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
     step_id: stepId,
     payload: { artifact: { id: stdoutId, kind: 'stdout', name: 'opencode stdout' } }
   });
+
+  await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: `Run started (${kind}).` });
 
   await appendEventRow(db, {
     id: newId('evt'),
@@ -479,6 +520,8 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
         run_id: runId,
         payload: { reason: v && !v.ok ? `plan approval required (invalid format: ${v.error})` : 'plan approval required', plan_artifact_id: planArtifactId }
       });
+
+        await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: 'Approval required. Approve or reject in the dashboard to continue.' });
       return;
     }
 
@@ -495,6 +538,8 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
       run_id: runId,
       payload: { message: 'Plan run failed: no json block produced' }
     });
+
+        await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: 'Run failed. Check timeline/artifacts for details.' });
     return;
   }
 
@@ -515,6 +560,8 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
       run_id: runId,
       payload: { reason: 'OC_DASH_REQUIRE_APPROVAL=1 but no diff produced', stdout_artifact_id: stdoutId }
     });
+
+        await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: 'Approval required. Approve or reject in the dashboard to continue.' });
     return;
   }
 
@@ -539,6 +586,8 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
           run_id: runId,
           payload: { reason: 'diff block was empty', stdout_artifact_id: stdoutId }
         });
+
+        await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: 'Approval required. Approve or reject in the dashboard to continue.' });
         return;
       }
     } else {
@@ -580,6 +629,8 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
           run_id: runId,
           payload: { reason: 'OC_DASH_REQUIRE_APPROVAL=1', patch_artifact_id: patchArtifactId }
         });
+
+        await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: 'Approval required. Approve or reject in the dashboard to continue.' });
         return;
       }
 
@@ -601,6 +652,8 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
             run_id: runId,
             payload: { reason: dec.reason, patch_artifact_id: patchArtifactId }
           });
+
+        await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: 'Approval required. Approve or reject in the dashboard to continue.' });
 
           return;
         }
@@ -826,6 +879,8 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
         payload: { message: 'Run completed (auto-apply + checks + commit + PR)' }
       });
 
+        await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: `Run completed. ${runRow?.prUrl ? 'PR: ' + runRow.prUrl : ''}`.trim() });
+
       return;
       // AUTO_APPLY_END
       }
@@ -846,6 +901,8 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
       payload: { message: 'Run completed (opencode)' }
     });
 
+        await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: `Run completed. ${runRow?.prUrl ? 'PR: ' + runRow.prUrl : ''}`.trim() });
+
     await db.update(runs).set({ status: 'succeeded', finishedAt: new Date() }).where(eq(runs.id, runId));
   } else {
     await appendEventRow(db, {
@@ -860,6 +917,8 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
       run_id: runId,
       payload: { message: 'Run failed (opencode)' }
     });
+
+        await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: 'Run failed. Check timeline/artifacts for details.' });
 
     await db.update(runs).set({ status: 'failed', finishedAt: new Date() }).where(eq(runs.id, runId));
   }

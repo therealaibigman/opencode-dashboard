@@ -507,6 +507,34 @@ export function TaskDrawer({ task, onClose }: { task: Task; onClose: () => void 
                     </button>
                   ))}
                 </div>
+                {selectedThreadId ? (
+                  <div className="mt-2 flex gap-2">
+                    <input
+                      value={threads.find((x) => x.id === selectedThreadId)?.title ?? ''}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setThreads((prev) => prev.map((t) => (t.id === selectedThreadId ? { ...t, title: v } : t)));
+                      }}
+                      className="w-full rounded-lg border border-matrix-500/20 bg-black/25 px-2 py-2 text-xs text-zinc-100 outline-none"
+                      placeholder="Thread title"
+                    />
+                    <button
+                      onClick={async () => {
+                        const t = threads.find((x) => x.id === selectedThreadId);
+                        if (!t) return;
+                        await fetch(`${BASE}/api/threads/${encodeURIComponent(selectedThreadId)}`, {
+                          method: 'PATCH',
+                          headers: { 'content-type': 'application/json' },
+                          body: JSON.stringify({ title: t.title })
+                        });
+                        await refreshThreads();
+                      }}
+                      className="shrink-0 rounded-lg bg-black/25 px-3 py-2 text-xs text-zinc-200 ring-1 ring-matrix-500/15 hover:bg-black/35"
+                    >
+                      Save title
+                    </button>
+                  </div>
+                ) : null}
               </div>
 
               <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-matrix-500/15 bg-black/15 p-3">

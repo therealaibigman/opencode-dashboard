@@ -14,6 +14,7 @@ type RunRow = {
   modelProfile: string;
   kind: 'execute' | 'plan';
   parentRunId: string | null;
+  threadId: string | null;
   prUrl: string | null;
   prBranch: string | null;
   prState: string | null;
@@ -33,6 +34,9 @@ type ArtifactStub = {
 };
 
 type ArtifactFull = ArtifactStub & { content_text: string };
+
+type ThreadRow = { id: string; title: string; taskId: string | null; createdAt: string; updatedAt: string };
+type MessageRow = { id: string; role: string; contentMd: string; createdAt: string };
 
 async function j<T>(res: Response): Promise<T> {
   if (!res.ok) throw new Error(await res.text());
@@ -171,6 +175,8 @@ export function RunDetails({ runId }: { runId: string }) {
       artifacts: `${BASE}/api/runs/${encodeURIComponent(runId)}/artifacts`,
       artifact: (id: string) => `${BASE}/api/artifacts/${encodeURIComponent(id)}`,
       events: `${BASE}/api/runs/${encodeURIComponent(runId)}/events`,
+      thread: (id: string) => `${BASE}/api/threads/${encodeURIComponent(id)}`,
+      messages: (id: string) => `${BASE}/api/threads/${encodeURIComponent(id)}/messages`,
       eventsStream: `${BASE}/api/runs/${encodeURIComponent(runId)}/events/stream`
     }),
     [BASE, runId]
@@ -179,6 +185,11 @@ export function RunDetails({ runId }: { runId: string }) {
   const [run, setRun] = useState<RunRow | null>(null);
   const [artifacts, setArtifacts] = useState<ArtifactStub[]>([]);
   const [openArtifact, setOpenArtifact] = useState<ArtifactFull | null>(null);
+  const [thread, setThread] = useState<ThreadRow | null>(null);
+  const [messages, setMessages] = useState<MessageRow[]>([]);
+  const [newMsg, setNewMsg] = useState('');
+  const [sending, setSending] = useState(false);
+
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [cancelling, setCancelling] = useState(false);
@@ -192,9 +203,22 @@ export function RunDetails({ runId }: { runId: string }) {
   async function refreshRun() {
     const r = await j<{ run: RunRow }>(await fetch(api.run, { cache: 'no-store' }));
     setRun(r.run);
+    await refreshThreadAndMessages(r.run);
+  }
+
+  async function refreshThreadAndMessages(runRow?: RunRow | null) {
+    const r = runRow ?? run;
+    const tid = r?.threadId;
+    if (!tid) return;
+    const thr = await j<{ threads: any[] }>(await fetch(`${BASE}/api/threads?project_id=${encodeURIComponent(r.projectId)}&task_id=${encodeURIComponent(r.taskId ?? '')}`, { cache: 'no-store' }));
+    const found = (thr.threads ?? []).find((t: any) => t.id === tid);
+    if (found) setThread(found as any);
+    const msgs = await j<{ messages: MessageRow[] }>(await fetch(api.messages(tid), { cache: 'no-store' }));
+    setMessages(msgs.messages);
   }
 
   async function refreshArtifacts() {
+
     const a = await j<{ artifacts: ArtifactStub[] }>(await fetch(api.artifacts, { cache: 'no-store' }));
     setArtifacts(a.artifacts);
   }
@@ -331,7 +355,28 @@ export function RunDetails({ runId }: { runId: string }) {
     }
   }
 
+  async function sendThreadMessage() {
+    if (!run?.threadId) return;
+    const content = newMsg.trim();
+    if (!content) return;
+    setSending(true);
+    try {
+      await j(
+        await fetch(api.messages(run.threadId), {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ role: 'user', content_md: content })
+        })
+      );
+      setNewMsg('');
+      await refreshThreadAndMessages();
+    } finally {
+      setSending(false);
+    }
+  }
+
   async function loadArtifact(id: string) {
+
     const data = await j<{ artifact: ArtifactFull }>(await fetch(api.artifact(id), { cache: 'no-store' }));
     setOpenArtifact(data.artifact);
   }
@@ -584,6 +629,49 @@ export function RunDetails({ runId }: { runId: string }) {
             </div>
           ) : null}
         </div>
+      </div>
+
+      <div className="rounded-2xl border border-matrix-500/20 bg-black/20 p-3">
+        <div className="mb-2 text-xs font-medium text-matrix-200/90">Thread & Messages</div>
+        {!run?.threadId ? (
+          <div className="text-[11px] text-zinc-400">No thread linked to this run.</div>
+        ) : (
+          <div className="space-y-3">
+            <div className="text-[11px] text-zinc-400 break-all">thread: {run.threadId}</div>
+            {messages.length === 0 ? <div className="text-[11px] text-zinc-400">No messages yet.</div> : null}
+            <div className="max-h-64 space-y-2 overflow-auto pr-1">
+              {messages.map((m) => (
+                <div key={m.id} className="rounded-lg border border-matrix-500/10 bg-black/20 p-2">
+                  <div className="flex items-center justify-between">
+                    <div className="text-[11px] text-zinc-300">{m.role}</div>
+                    <div className="text-[10px] text-zinc-500">{fmtTs(m.createdAt)}</div>
+                  </div>
+                  <div className="mt-1 whitespace-pre-wrap break-words text-xs text-zinc-100">{m.contentMd}</div>
+                </div>
+              ))}
+            </div>
+
+            <div className="flex gap-2">
+              <input
+                value={newMsg}
+                onChange={(e) => setNewMsg(e.target.value)}
+                placeholder="Message…"
+                className="w-full rounded-lg border border-matrix-500/20 bg-black/25 px-2 py-2 text-xs text-zinc-100 outline-none"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void sendThreadMessage();
+                }}
+              />
+              <button
+                onClick={() => void sendThreadMessage()}
+                disabled={sending}
+                className="shrink-0 rounded-lg bg-matrix-500/15 px-3 py-2 text-xs text-matrix-100 ring-1 ring-matrix-500/30 hover:bg-matrix-500/20 disabled:opacity-60"
+              >
+                {sending ? '…' : 'Send'}
+              </button>
+            </div>
+            <div className="text-[10px] text-zinc-500">Ctrl/Cmd+Enter to send</div>
+          </div>
+        )}
       </div>
 
       <RunTimeline runId={runId} />
