@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useBasePath } from './useBasePath';
 import { RunTimeline } from './RunTimeline';
 
@@ -44,6 +44,10 @@ function canCancel(status: string | null | undefined) {
   return status === 'queued' || status === 'running' || status === 'needs_approval';
 }
 
+function isActive(status: string | null | undefined) {
+  return status === 'queued' || status === 'running' || status === 'needs_approval';
+}
+
 export function RunDetails({ runId }: { runId: string }) {
   const BASE = useBasePath();
 
@@ -54,7 +58,8 @@ export function RunDetails({ runId }: { runId: string }) {
       approve: `${BASE}/api/runs/${encodeURIComponent(runId)}/approve`,
       reject: `${BASE}/api/runs/${encodeURIComponent(runId)}/reject`,
       artifacts: `${BASE}/api/runs/${encodeURIComponent(runId)}/artifacts`,
-      artifact: (id: string) => `${BASE}/api/artifacts/${encodeURIComponent(id)}`
+      artifact: (id: string) => `${BASE}/api/artifacts/${encodeURIComponent(id)}`,
+      eventsStream: `${BASE}/api/runs/${encodeURIComponent(runId)}/events/stream`
     }),
     [BASE, runId]
   );
@@ -68,15 +73,23 @@ export function RunDetails({ runId }: { runId: string }) {
   const [approving, setApproving] = useState(false);
   const [rejecting, setRejecting] = useState(false);
 
+  const stopRef = useRef(false);
+
+  async function refreshRun() {
+    const r = await j<{ run: RunRow }>(await fetch(api.run, { cache: 'no-store' }));
+    setRun(r.run);
+  }
+
+  async function refreshArtifacts() {
+    const a = await j<{ artifacts: ArtifactStub[] }>(await fetch(api.artifacts, { cache: 'no-store' }));
+    setArtifacts(a.artifacts);
+  }
+
   async function refresh() {
     setErr(null);
     setLoading(true);
     try {
-      const r = await j<{ run: RunRow }>(await fetch(api.run, { cache: 'no-store' }));
-      setRun(r.run);
-
-      const a = await j<{ artifacts: ArtifactStub[] }>(await fetch(api.artifacts, { cache: 'no-store' }));
-      setArtifacts(a.artifacts);
+      await Promise.all([refreshRun(), refreshArtifacts()]);
     } catch (e: any) {
       setErr(String(e?.message ?? e));
     } finally {
@@ -105,7 +118,9 @@ export function RunDetails({ runId }: { runId: string }) {
   async function approveRun() {
     if (run?.status !== 'needs_approval') return;
 
-    const ok = window.confirm(`Approve and apply changes for run ${runId}?\n\nThis will apply the patch, run checks, and commit automatically.`);
+    const ok = window.confirm(
+      `Approve and apply changes for run ${runId}?\n\nThis will apply the patch, run checks, and commit automatically.`
+    );
     if (!ok) return;
 
     setErr(null);
@@ -149,10 +164,56 @@ export function RunDetails({ runId }: { runId: string }) {
     setOpenArtifact(data.artifact);
   }
 
+  // initial load
   useEffect(() => {
     refresh().catch(() => void 0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [api.run, api.artifacts]);
+
+  // keep artifacts fresh while the run is active
+  useEffect(() => {
+    stopRef.current = false;
+    if (!isActive(run?.status)) return;
+
+    const t = setInterval(() => {
+      if (stopRef.current) return;
+      refreshArtifacts().catch(() => void 0);
+      refreshRun().catch(() => void 0);
+    }, 1500);
+
+    return () => {
+      stopRef.current = true;
+      clearInterval(t);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [run?.status, api.artifacts, api.run]);
+
+  // refresh artifacts immediately on artifact.created events (SSE)
+  useEffect(() => {
+    stopRef.current = false;
+    const es = new EventSource(api.eventsStream);
+
+    const onArtifact = () => {
+      refreshArtifacts().catch(() => void 0);
+    };
+
+    es.addEventListener('artifact.created', onArtifact);
+    es.onopen = () => void 0;
+    es.onerror = () => {
+      // ignore; RunTimeline already has polling fallback.
+    };
+
+    return () => {
+      stopRef.current = true;
+      try {
+        es.removeEventListener('artifact.created', onArtifact);
+        es.close();
+      } catch {
+        // ignore
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [api.eventsStream]);
 
   return (
     <div className="space-y-4">
