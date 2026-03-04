@@ -27,7 +27,8 @@ html.light {
   --panel: rgba(255, 255, 255, 0.74);
   --panel-2: rgba(255, 255, 255, 0.86);
   --muted: rgba(24, 24, 27, 0.72);
-  --matrix-ink: rgba(0, 92, 26, 0.95);
+  /* darker green ink for all matrix accent text in light mode */
+  --matrix-ink: rgba(0, 64, 18, 0.95);
 }
 
 /* Dark theme */
