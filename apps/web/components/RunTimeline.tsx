@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useBasePath } from './useBasePath';
 
 type Ev = {
@@ -104,34 +104,106 @@ function ToolCallBlock({ e }: { e: Ev }) {
   );
 }
 
+async function j<T>(res: Response): Promise<T> {
+  if (!res.ok) throw new Error(await res.text());
+  return (await res.json()) as T;
+}
+
 export function RunTimeline({ runId }: { runId: string }) {
   const BASE = useBasePath();
   const [events, setEvents] = useState<Ev[]>([]);
-  const [status, setStatus] = useState<'connecting' | 'connected' | 'error'>('connecting');
+  const [status, setStatus] = useState<'connecting' | 'connected' | 'polling' | 'error'>('connecting');
+  const [note, setNote] = useState<string | null>(null);
 
-  const url = useMemo(() => `${BASE}/api/runs/${encodeURIComponent(runId)}/events/stream`, [BASE, runId]);
+  const streamUrl = useMemo(
+    () => `${BASE}/api/runs/${encodeURIComponent(runId)}/events/stream`,
+    [BASE, runId]
+  );
+  const pollUrl = useMemo(
+    () => `${BASE}/api/runs/${encodeURIComponent(runId)}/events`,
+    [BASE, runId]
+  );
+
+  const stopRef = useRef(false);
 
   useEffect(() => {
+    stopRef.current = false;
     setEvents([]);
     setStatus('connecting');
+    setNote(null);
 
-    const es = new EventSource(url);
+    let pollTimer: ReturnType<typeof setInterval> | null = null;
+    let es: EventSource | null = null;
 
-    const onAny = (ev: MessageEvent) => {
+    const startPolling = () => {
+      if (pollTimer) return;
+      setStatus('polling');
+      setNote('SSE disconnected; falling back to polling. Check nginx buffering/timeouts for text/event-stream.');
+
+      const tick = async () => {
+        try {
+          const data = await j<{ events: any[] }>(await fetch(pollUrl, { cache: 'no-store' }));
+          const evs = (data.events ?? []).map((r: any) => ({
+            id: r.id,
+            ts: r.ts instanceof Date ? r.ts.toISOString() : String(r.ts),
+            seq: Number(r.seq ?? 0),
+            type: String(r.type),
+            source: String(r.source),
+            severity: String(r.severity),
+            run_id: r.runId ?? r.run_id,
+            step_id: r.stepId ?? r.step_id,
+            payload: r.payload ?? {}
+          })) as Ev[];
+          setEvents(evs.slice(-800));
+        } catch (e: any) {
+          setStatus('error');
+          setNote(String(e?.message ?? e));
+        }
+      };
+
+      void tick();
+      pollTimer = setInterval(() => void tick(), 1250);
+    };
+
+    try {
+      es = new EventSource(streamUrl);
+
+      const onAny = (ev: MessageEvent) => {
+        try {
+          const e = JSON.parse(ev.data) as Ev;
+          setEvents((prev) => [...prev, e].slice(-800));
+        } catch {
+          // ignore
+        }
+      };
+
+      es.onmessage = onAny;
+      es.onopen = () => {
+        setStatus('connected');
+        setNote(null);
+      };
+      es.onerror = () => {
+        try {
+          es?.close();
+        } catch {
+          // ignore
+        }
+        if (!stopRef.current) startPolling();
+      };
+    } catch {
+      startPolling();
+    }
+
+    return () => {
+      stopRef.current = true;
       try {
-        const e = JSON.parse(ev.data) as Ev;
-        setEvents((prev) => [...prev, e].slice(-800));
+        es?.close();
       } catch {
         // ignore
       }
+      if (pollTimer) clearInterval(pollTimer);
     };
-
-    es.onmessage = onAny;
-    es.onerror = () => setStatus('error');
-    es.onopen = () => setStatus('connected');
-
-    return () => es.close();
-  }, [url]);
+  }, [streamUrl, pollUrl]);
 
   return (
     <div className="flex h-full min-h-[420px] flex-col rounded-xl border border-matrix-500/20 bg-black/25 p-3">
@@ -141,14 +213,18 @@ export function RunTimeline({ runId }: { runId: string }) {
           className={
             status === 'connected'
               ? 'text-[11px] text-matrix-200/80'
-              : status === 'error'
-                ? 'text-[11px] text-red-200'
-                : 'text-[11px] text-zinc-400'
+              : status === 'polling'
+                ? 'text-[11px] text-yellow-200/90'
+                : status === 'error'
+                  ? 'text-[11px] text-red-200'
+                  : 'text-[11px] text-zinc-400'
           }
         >
           {status}
         </div>
       </div>
+
+      {note ? <div className="mb-2 text-[11px] text-zinc-400">{note}</div> : null}
 
       <div className="flex-1 overflow-auto">
         {events.length === 0 ? <div className="text-[11px] text-zinc-400">No events yet.</div> : null}
@@ -178,7 +254,7 @@ export function RunTimeline({ runId }: { runId: string }) {
         </div>
       </div>
 
-      <div className="mt-2 truncate text-[10px] text-zinc-500">{url}</div>
+      <div className="mt-2 truncate text-[10px] text-zinc-500">{streamUrl}</div>
     </div>
   );
 }
