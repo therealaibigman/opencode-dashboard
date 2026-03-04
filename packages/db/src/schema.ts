@@ -112,6 +112,19 @@ export const messages = pgTable(
   })
 );
 
+export const appSettings = pgTable(
+  'app_settings',
+  {
+    id: text('id').primaryKey(),
+    theme: text('theme').notNull().default('dark'),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (s) => ({
+    updatedIdx: index('app_settings_updated_idx').on(s.updatedAt)
+  })
+);
+
 export const pipelines = pgTable(
   'pipelines',
   {
