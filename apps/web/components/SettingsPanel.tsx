@@ -28,18 +28,21 @@ export function SettingsPanel() {
         <div className="grid gap-3 md:grid-cols-2">
           <div>
             <div className="mb-2 text-xs text-zinc-400">Model profile</div>
-            <select
+            <input
               value={settings.modelProfile}
               onChange={(e) => setModelProfile(e.target.value)}
+              list="ocdash-model-profiles"
               className="w-full rounded-lg border border-matrix-500/20 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none"
-            >
-              <option value="balanced">balanced</option>
-              <option value="fast">fast</option>
-              <option value="smart">smart</option>
-              <option value="strict">strict</option>
-            </select>
+              placeholder="balanced | fast | smart | strict | or full model id"
+            />
+            <datalist id="ocdash-model-profiles">
+              <option value="balanced" />
+              <option value="fast" />
+              <option value="smart" />
+              <option value="strict" />
+            </datalist>
             <div className="mt-1 text-[11px] text-zinc-500">
-              This is just a label passed to the worker as <span className="font-mono">model_profile</span>.
+              Use a profile label (balanced/fast/smart/strict) or paste a full model id (contains “/”) to force a specific model for the next run.
             </div>
           </div>
 

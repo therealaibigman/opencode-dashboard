@@ -39,6 +39,8 @@ export function AppShell({ title, children }: { title?: string; children: React.
   const [localPath, setLocalPath] = useState('');
   const [repoUrl, setRepoUrl] = useState('');
   const [defaultBranch, setDefaultBranch] = useState('main');
+  const [planModel, setPlanModel] = useState('');
+  const [executeModel, setExecuteModel] = useState('');
   const [savingSource, setSavingSource] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [syncNote, setSyncNote] = useState<string | null>(null);
@@ -76,6 +78,8 @@ export function AppShell({ title, children }: { title?: string; children: React.
     setLocalPath(String(selected?.localPath ?? ''));
     setRepoUrl(String(selected?.repoUrl ?? ''));
     setDefaultBranch(String(selected?.defaultBranch ?? 'main'));
+    setPlanModel(String(selected?.planModel ?? ''));
+    setExecuteModel(String(selected?.executeModel ?? ''));
     setSyncNote(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedProjectId, projects.length]);
@@ -93,7 +97,9 @@ export function AppShell({ title, children }: { title?: string; children: React.
           body: JSON.stringify({
             local_path: localPath.trim() || null,
             repo_url: repoUrl.trim() || null,
-            default_branch: defaultBranch.trim() || null
+            default_branch: defaultBranch.trim() || null,
+            plan_model: planModel.trim() || null,
+            execute_model: executeModel.trim() || null
           })
         })
       );
@@ -367,6 +373,18 @@ export function AppShell({ title, children }: { title?: string; children: React.
               value={defaultBranch}
               onChange={(e) => setDefaultBranch(e.target.value)}
               placeholder="default branch (main)"
+              className="w-full rounded-lg border border-matrix-500/20 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:ring-1 focus:ring-matrix-500/40"
+            />
+            <input
+              value={planModel}
+              onChange={(e) => setPlanModel(e.target.value)}
+              placeholder="plan model (optional)"
+              className="w-full rounded-lg border border-matrix-500/20 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:ring-1 focus:ring-matrix-500/40"
+            />
+            <input
+              value={executeModel}
+              onChange={(e) => setExecuteModel(e.target.value)}
+              placeholder="execute model (optional)"
               className="w-full rounded-lg border border-matrix-500/20 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:ring-1 focus:ring-matrix-500/40"
             />
             <div className="grid grid-cols-2 gap-2">

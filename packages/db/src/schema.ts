@@ -38,6 +38,10 @@ export const projects = pgTable('projects', {
   repoUrl: text('repo_url'),
   defaultBranch: text('default_branch'),
 
+  // Model routing (optional overrides)
+  planModel: text('plan_model'),
+  executeModel: text('execute_model'),
+
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
 });
 

@@ -399,7 +399,9 @@ const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Proje
       ? `${baseTask}\n\nYou are planning work. Output a plan as JSON inside a fenced \`\`\`json block with:\n{\n  \"summary\": string,\n  \"steps\": [{\"title\": string, \"details\": string, \"risk\": \"low\"|\"med\"|\"high\"}],\n  \"files\": string[],\n  \"commands\": string[]\n}\n\nDo NOT output a diff. Do NOT execute anything.\n`
       : `${baseTask}\n\n${approvedPlanJson ? `Approved plan (JSON):\n\n\`\`\`json\n${approvedPlanJson}\n\`\`\`\n\nFollow the approved plan.\n\n` : ''}Return a unified diff in a fenced \`\`\`diff block if code changes are needed. Include full diff headers (diff --git, ---/+++).\n\nDo the next best action.`;
 
-  const model = (process.env.OPENCODE_MODEL ?? '').trim() || undefined;
+  const direct = String(runRow?.modelProfile ?? '').trim();
+  const directModel = direct.includes('/') ? direct : '';
+  const model = (directModel || (kind === 'plan' ? String((proj as any)?.planModel ?? '') : String((proj as any)?.executeModel ?? '')) || (process.env.OPENCODE_MODEL ?? '')).trim() || undefined;
   const timeoutMs = Number(process.env.OPENCODE_TIMEOUT_MS ?? '600000');
 
   await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: `Run started (${kind}).` });
