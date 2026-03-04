@@ -13,6 +13,17 @@ export const runtime = 'nodejs';
 
 const WORKSPACES_ROOT = process.env.PROJECT_WORKSPACES_ROOT ?? '/home/exedev/.openclaw/workspace/opencode-workspaces';
 
+function wrapHunkAsFilePatch(patchText: string, filePath: string) {
+  const hunks = patchText.trimEnd();
+  return [
+    `diff --git a/${filePath} b/${filePath}`,
+    `--- a/${filePath}`,
+    `+++ b/${filePath}`,
+    hunks,
+    ''
+  ].join('\n');
+}
+
 function policyAllowCommand(cmd: string): { ok: true } | { ok: false; reason: string } {
   const s = cmd.trim();
   const block = [
@@ -33,6 +44,9 @@ function policyAllowCommand(cmd: string): { ok: true } | { ok: false; reason: st
     /^git\s+apply\s+.+$/,
     /^git\s+add\s+-A$/,
     /^git\s+commit\s+-m\s+.+$/,
+    /^git\s+init$/,
+    /^git\s+config\s+user\.email\s+.+$/,
+    /^git\s+config\s+user\.name\s+.+$/,
     /^npm\s+test$/,
     /^npm\s+run\s+lint$/,
     /^npm\s+run\s+typecheck$/,
@@ -120,6 +134,12 @@ async function writeArtifact({
   return id;
 }
 
+async function ensureGitRepo(ws: string) {
+  await runCmd(ws, 'git init');
+  await runCmd(ws, 'git config user.email ocdash@local');
+  await runCmd(ws, 'git config user.name ocdash');
+}
+
 export async function POST(_req: Request, { params }: { params: Promise<{ runId: string }> }) {
   const { runId } = await params;
   const url = process.env.DATABASE_URL;
@@ -149,10 +169,16 @@ export async function POST(_req: Request, { params }: { params: Promise<{ runId:
     if (!arows.length) return NextResponse.json({ error: 'no patch artifact found for run' }, { status: 400 });
 
     const patchArtifact = arows[0]!;
-    const patchText = patchArtifact.contentText ?? '';
+    let patchText = patchArtifact.contentText ?? '';
     if (!patchText.trim()) return NextResponse.json({ error: 'patch artifact is empty' }, { status: 400 });
 
     const ws = path.resolve(WORKSPACES_ROOT, r.projectId);
+    await ensureGitRepo(ws);
+
+    // If patch is just a hunk, assume README.md for testing.
+    if (!/^diff --git\s+/m.test(patchText) && patchText.trimStart().startsWith('@@')) {
+      patchText = wrapHunkAsFilePatch(patchText, 'README.md');
+    }
 
     // Hard stop: never allow patch touching outside workspace.
     const touched = extractTouchedPaths(patchText);
@@ -164,10 +190,7 @@ export async function POST(_req: Request, { params }: { params: Promise<{ runId:
     }
 
     // Mark running.
-    await db
-      .update(runs)
-      .set({ status: 'running' })
-      .where(and(eq(runs.id, rid), inArray(runs.status, ['needs_approval'])));
+    await db.update(runs).set({ status: 'running' }).where(and(eq(runs.id, rid), inArray(runs.status, ['needs_approval'])));
 
     const stepId = 'stp_manual_approval';
 

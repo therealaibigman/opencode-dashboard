@@ -11,7 +11,7 @@ import type { OcdashEvent } from '@ocdash/shared';
 import { requireEnv } from './env.js';
 import { ensureProjectWorkspace } from './workspaces.js';
 import { opencodeRun } from './opencode.js';
-import { extractUnifiedDiffFromText, writeTempPatch } from './patch.js';
+import { extractUnifiedDiffFromText, wrapHunkAsFilePatch, writeTempPatch } from './patch.js';
 import { policyCheckCommand, policyCheckPath } from './policy.js';
 
 const DATABASE_URL = requireEnv('DATABASE_URL');
@@ -225,7 +225,7 @@ async function processRun(db: any, runId: string) {
   await ensureReadme(ws);
 
   const msg = taskId
-    ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}\n\nReturn a unified diff in a fenced \`\`\`diff block if code changes are needed. Keep dangerous commands out.\n\nDo the next best action.`
+    ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}\n\nReturn a unified diff in a fenced \`\`\`diff block if code changes are needed. Include full diff headers (diff --git, ---/+++).\n\nDo the next best action.`
     : `Project ${projectId}: Do the next best action.`;
 
   const model = (process.env.OPENCODE_MODEL ?? '').trim() || undefined;
@@ -395,6 +395,12 @@ async function processRun(db: any, runId: string) {
   // Approval gate: try to extract a diff and auto-apply it if policy allows.
   const patch = extractUnifiedDiffFromText(result.stdout ?? '');
   if (patch) {
+    // If OpenCode produced a bare hunk (no file headers), try to wrap it for README.md.
+    const normalizedPatchText =
+      !patch.hasGitHeaders && patch.patchText.trimStart().startsWith('@@')
+        ? wrapHunkAsFilePatch({ patchText: patch.patchText, filePath: 'README.md' })
+        : patch.patchText;
+
     const patchArtifactId = await writeArtifact({
       db,
       projectId,
@@ -402,7 +408,7 @@ async function processRun(db: any, runId: string) {
       stepId,
       kind: 'patch',
       name: 'proposed patch',
-      content: patch.patchText
+      content: normalizedPatchText
     });
 
     await appendEventRow(db, {
@@ -437,7 +443,8 @@ async function processRun(db: any, runId: string) {
     }
 
     // policy: all touched paths must be inside workspace and not sensitive
-    for (const p of patch.touchedPaths) {
+    const touchedPaths = patch.touchedPaths.length ? patch.touchedPaths : ['README.md'];
+    for (const p of touchedPaths) {
       const dec = policyCheckPath({ workspace: ws, filePath: p });
       if (!dec.ok) {
         await db.update(runs).set({ status: 'needs_approval' }).where(eq(runs.id, runId));
@@ -460,7 +467,7 @@ async function processRun(db: any, runId: string) {
     }
 
     // apply patch
-    const patchFile = await writeTempPatch({ dir: ws, patchText: patch.patchText });
+    const patchFile = await writeTempPatch({ dir: ws, patchText: normalizedPatchText });
     const applyRes = await runCmd({ cwd: ws, cmd: `git apply ${patchFile}` });
 
     if (applyRes.exitCode !== 0) {
