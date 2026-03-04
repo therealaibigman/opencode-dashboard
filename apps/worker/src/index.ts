@@ -11,7 +11,7 @@ import type { OcdashEvent } from '@ocdash/shared';
 import { requireEnv } from './env.js';
 import { ensureProjectWorkspace } from './workspaces.js';
 import { opencodeRun } from './opencode.js';
-import { extractUnifiedDiffFromText, wrapHunkAsFilePatch, writeTempPatch } from './patch.js';
+import { extractUnifiedDiffFromText, wrapHunkAsFilePatch } from './patch.js';
 import { policyCheckCommand, policyCheckPath } from './policy.js';
 
 const DATABASE_URL = requireEnv('DATABASE_URL');
@@ -161,30 +161,6 @@ async function ensureReadme(ws: string) {
   if (!(await fileExists(p))) {
     await fs.writeFile(p, '# Project\n', 'utf8');
   }
-}
-
-async function applyPatchWithFallback({
-  ws,
-  patchText
-}: {
-  ws: string;
-  patchText: string;
-}): Promise<{ ok: boolean; method: 'git-apply' | 'patch'; stdout: string; stderr: string }> {
-  const patchFile = await writeTempPatch({ dir: ws, patchText });
-
-  const git = await runCmd({ cwd: ws, cmd: `git apply ${patchFile}` });
-  if (git.exitCode === 0) return { ok: true, method: 'git-apply', stdout: git.stdout, stderr: git.stderr };
-
-  // fallback to GNU patch (fuzz/offset)
-  const p = await runCmd({ cwd: ws, cmd: `patch -p1 --forward --batch -i ${patchFile}` });
-  if (p.exitCode === 0) return { ok: true, method: 'patch', stdout: p.stdout, stderr: p.stderr };
-
-  return {
-    ok: false,
-    method: 'git-apply',
-    stdout: `${git.stdout}\n---\n[fallback patch stdout]\n${p.stdout}`,
-    stderr: `${git.stderr}\n---\n[fallback patch stderr]\n${p.stderr}`
-  };
 }
 
 async function processRun(db: any, runId: string) {
@@ -416,8 +392,27 @@ async function processRun(db: any, runId: string) {
     return;
   }
 
-  // Approval gate: try to extract a diff and auto-apply it if policy allows.
+  // Approval gate: try to extract a diff and store it. Only request approval when patch exists.
   const patch = extractUnifiedDiffFromText(result.stdout ?? '');
+
+  // If require-approval is on but the model produced no patch, force needs_approval with reason.
+  if (REQUIRE_APPROVAL && !patch) {
+    await db.update(runs).set({ status: 'needs_approval' }).where(eq(runs.id, runId));
+    await appendEventRow(db, {
+      id: newId('evt'),
+      ts: nowIso(),
+      seq: seq++,
+      type: 'approval.requested',
+      source: 'worker',
+      severity: 'warn',
+      project_id: projectId,
+      task_id: taskId ?? undefined,
+      run_id: runId,
+      payload: { reason: 'OC_DASH_REQUIRE_APPROVAL=1 but no diff produced', stdout_artifact_id: stdoutId }
+    });
+    return;
+  }
+
   if (patch) {
     // If OpenCode produced a bare hunk (no file headers), try to wrap it for README.md.
     const normalizedPatchText =
@@ -425,54 +420,10 @@ async function processRun(db: any, runId: string) {
         ? wrapHunkAsFilePatch({ patchText: patch.patchText, filePath: 'README.md' })
         : patch.patchText;
 
-    const patchArtifactId = await writeArtifact({
-      db,
-      projectId,
-      runId,
-      stepId,
-      kind: 'patch',
-      name: 'proposed patch',
-      content: normalizedPatchText
-    });
-
-    await appendEventRow(db, {
-      id: newId('evt'),
-      ts: nowIso(),
-      seq: seq++,
-      type: 'artifact.created',
-      source: 'worker',
-      severity: 'info',
-      project_id: projectId,
-      task_id: taskId ?? undefined,
-      run_id: runId,
-      step_id: stepId,
-      payload: { artifact: { id: patchArtifactId, kind: 'patch', name: 'proposed patch' } }
-    });
-
-    if (REQUIRE_APPROVAL) {
-      await db.update(runs).set({ status: 'needs_approval' }).where(eq(runs.id, runId));
-      await appendEventRow(db, {
-        id: newId('evt'),
-        ts: nowIso(),
-        seq: seq++,
-        type: 'approval.requested',
-        source: 'worker',
-        severity: 'warn',
-        project_id: projectId,
-        task_id: taskId ?? undefined,
-        run_id: runId,
-        payload: { reason: 'OC_DASH_REQUIRE_APPROVAL=1', patch_artifact_id: patchArtifactId }
-      });
-      return;
-    }
-
-    // policy: all touched paths must be inside workspace and not sensitive
-    const touchedPaths = patch.touchedPaths.length ? patch.touchedPaths : ['README.md'];
-    for (const p of touchedPaths) {
-      const dec = policyCheckPath({ workspace: ws, filePath: p });
-      if (!dec.ok) {
+    // Empty patch guard
+    if (!normalizedPatchText.trim()) {
+      if (REQUIRE_APPROVAL) {
         await db.update(runs).set({ status: 'needs_approval' }).where(eq(runs.id, runId));
-
         await appendEventRow(db, {
           id: newId('evt'),
           ts: nowIso(),
@@ -483,75 +434,83 @@ async function processRun(db: any, runId: string) {
           project_id: projectId,
           task_id: taskId ?? undefined,
           run_id: runId,
-          payload: { reason: dec.reason, patch_artifact_id: patchArtifactId }
+          payload: { reason: 'diff block was empty', stdout_artifact_id: stdoutId }
         });
-
         return;
       }
-    }
 
-    // apply patch (with fallback)
-    const applied = await applyPatchWithFallback({ ws, patchText: normalizedPatchText });
-    if (!applied.ok) {
-      await db.update(runs).set({ status: 'failed', finishedAt: new Date() }).where(eq(runs.id, runId));
-      return;
-    }
+      // Treat as no patch.
+    } else {
+      const patchArtifactId = await writeArtifact({
+        db,
+        projectId,
+        runId,
+        stepId,
+        kind: 'patch',
+        name: 'proposed patch',
+        content: normalizedPatchText
+      });
 
-    // run allowlisted commands only if package.json exists
-    const hasPkg = await fileExists(path.join(ws, 'package.json'));
-    if (!hasPkg) {
       await appendEventRow(db, {
         id: newId('evt'),
         ts: nowIso(),
         seq: seq++,
-        type: 'run.step.progress',
+        type: 'artifact.created',
         source: 'worker',
         severity: 'info',
         project_id: projectId,
         task_id: taskId ?? undefined,
         run_id: runId,
         step_id: stepId,
-        payload: { message: 'No package.json in workspace; skipping npm checks' }
+        payload: { artifact: { id: patchArtifactId, kind: 'patch', name: 'proposed patch' } }
       });
-    } else {
-      for (const cmd of AUTO_COMMANDS) {
-        const res = await runCmd({ cwd: ws, cmd });
-        if (res.exitCode !== 0) {
-          await db.update(runs).set({ status: 'failed', finishedAt: new Date() }).where(eq(runs.id, runId));
+
+      if (REQUIRE_APPROVAL) {
+        await db.update(runs).set({ status: 'needs_approval' }).where(eq(runs.id, runId));
+        await appendEventRow(db, {
+          id: newId('evt'),
+          ts: nowIso(),
+          seq: seq++,
+          type: 'approval.requested',
+          source: 'worker',
+          severity: 'warn',
+          project_id: projectId,
+          task_id: taskId ?? undefined,
+          run_id: runId,
+          payload: { reason: 'OC_DASH_REQUIRE_APPROVAL=1', patch_artifact_id: patchArtifactId }
+        });
+        return;
+      }
+
+      // policy: all touched paths must be inside workspace and not sensitive
+      const touchedPaths = patch.touchedPaths.length ? patch.touchedPaths : ['README.md'];
+      for (const p of touchedPaths) {
+        const dec = policyCheckPath({ workspace: ws, filePath: p });
+        if (!dec.ok) {
+          await db.update(runs).set({ status: 'needs_approval' }).where(eq(runs.id, runId));
+
+          await appendEventRow(db, {
+            id: newId('evt'),
+            ts: nowIso(),
+            seq: seq++,
+            type: 'approval.requested',
+            source: 'worker',
+            severity: 'warn',
+            project_id: projectId,
+            task_id: taskId ?? undefined,
+            run_id: runId,
+            payload: { reason: dec.reason, patch_artifact_id: patchArtifactId }
+          });
+
           return;
         }
       }
+
+      // If we ever re-enable auto-apply here, do it only for safe repos.
     }
-
-    // commit automatically
-    await runCmd({ cwd: ws, cmd: 'git add -A' });
-
-    const commitMsg = `ocdash: apply patch for ${taskId ?? runId}`;
-    const commitRes = await runCmd({ cwd: ws, cmd: `git commit -m "${commitMsg.replace(/"/g, "'")}"` });
-
-    if (commitRes.exitCode !== 0) {
-      await db.update(runs).set({ status: 'failed', finishedAt: new Date() }).where(eq(runs.id, runId));
-      return;
-    }
-
-    await db.update(runs).set({ status: 'succeeded', finishedAt: new Date() }).where(eq(runs.id, runId));
-    await appendEventRow(db, {
-      id: newId('evt'),
-      ts: nowIso(),
-      seq: seq++,
-      type: 'run.completed',
-      source: 'worker',
-      severity: 'info',
-      project_id: projectId,
-      task_id: taskId ?? undefined,
-      run_id: runId,
-      payload: { message: 'Run completed (auto-applied patch + checks + commit)' }
-    });
-
-    return;
   }
 
-  // Default outcome (no patch path): keep prior behavior.
+  // Default outcome: succeed/fail based on opencode exit code.
   if (result.exitCode === 0) {
     await appendEventRow(db, {
       id: newId('evt'),
