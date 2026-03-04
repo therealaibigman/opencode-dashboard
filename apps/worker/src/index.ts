@@ -2,6 +2,8 @@ import './env.js';
 
 import { and, eq, sql } from 'drizzle-orm';
 import { spawn } from 'node:child_process';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import { makeDb } from '@ocdash/db/client';
 import { artifacts, events, runs, tasks } from '@ocdash/db/schema';
 import { newId } from '@ocdash/shared';
@@ -132,6 +134,33 @@ async function runCmd({
   });
 }
 
+async function fileExists(p: string) {
+  try {
+    await fs.stat(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function ensureGitRepo(ws: string) {
+  const gitDir = path.join(ws, '.git');
+  if (!(await fileExists(gitDir))) {
+    await runCmd({ cwd: ws, cmd: 'git init' });
+  }
+
+  // Ensure git identity (local to repo)
+  await runCmd({ cwd: ws, cmd: 'git config user.email ocdash@local' });
+  await runCmd({ cwd: ws, cmd: 'git config user.name ocdash' });
+}
+
+async function ensureReadme(ws: string) {
+  const p = path.join(ws, 'README.md');
+  if (!(await fileExists(p))) {
+    await fs.writeFile(p, '# Project\n', 'utf8');
+  }
+}
+
 async function processRun(db: any, runId: string) {
   const runRows = await db.select().from(runs).where(eq(runs.id, runId)).limit(1);
   const runRow = runRows[0];
@@ -190,6 +219,9 @@ async function processRun(db: any, runId: string) {
   });
 
   const ws = await ensureProjectWorkspace({ root: WORKSPACES_ROOT, projectId });
+  await ensureGitRepo(ws);
+  await ensureReadme(ws);
+
   const msg = taskId
     ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}\n\nReturn a unified diff in a fenced \`\`\`diff block if code changes are needed. Keep dangerous commands out.\n\nDo the next best action.`
     : `Project ${projectId}: Do the next best action.`;
@@ -412,111 +444,42 @@ async function processRun(db: any, runId: string) {
     const patchFile = await writeTempPatch({ dir: ws, patchText: patch.patchText });
     const applyRes = await runCmd({ cwd: ws, cmd: `git apply ${patchFile}` });
 
-    const applyOutId = await writeArtifact({
-      db,
-      projectId,
-      runId,
-      stepId,
-      kind: 'stdout',
-      name: 'git apply stdout',
-      content: applyRes.stdout
-    });
-
-    const applyErrId = await writeArtifact({
-      db,
-      projectId,
-      runId,
-      stepId,
-      kind: 'stderr',
-      name: 'git apply stderr',
-      content: applyRes.stderr
-    });
-
-    await appendEventRow(db, {
-      id: newId('evt'),
-      ts: nowIso(),
-      seq: seq++,
-      type: 'approval.resolved',
-      source: 'worker',
-      severity: applyRes.exitCode === 0 ? 'info' : 'error',
-      project_id: projectId,
-      task_id: taskId ?? undefined,
-      run_id: runId,
-      payload: {
-        auto: true,
-        action: 'apply_patch',
-        exit_code: applyRes.exitCode,
-        stdout_artifact_id: applyOutId,
-        stderr_artifact_id: applyErrId
-      }
-    });
-
     if (applyRes.exitCode !== 0) {
       await db.update(runs).set({ status: 'failed', finishedAt: new Date() }).where(eq(runs.id, runId));
       return;
     }
 
-    // run allowlisted commands
-    for (const cmd of AUTO_COMMANDS) {
-      const res = await runCmd({ cwd: ws, cmd });
-
-      const outId = await writeArtifact({ db, projectId, runId, stepId, kind: 'stdout', name: `${cmd} stdout`, content: res.stdout });
-      const errId = await writeArtifact({ db, projectId, runId, stepId, kind: 'stderr', name: `${cmd} stderr`, content: res.stderr });
-
+    // run allowlisted commands only if package.json exists
+    const hasPkg = await fileExists(path.join(ws, 'package.json'));
+    if (!hasPkg) {
       await appendEventRow(db, {
         id: newId('evt'),
         ts: nowIso(),
         seq: seq++,
-        type: 'tool.call.completed',
+        type: 'run.step.progress',
         source: 'worker',
-        severity: res.exitCode === 0 ? 'info' : 'error',
+        severity: 'info',
         project_id: projectId,
         task_id: taskId ?? undefined,
         run_id: runId,
         step_id: stepId,
-        payload: {
-          tool: 'cmd',
-          args: { cmd },
-          result: { exit_code: res.exitCode, stdout_artifact_id: outId, stderr_artifact_id: errId }
-        }
+        payload: { message: 'No package.json in workspace; skipping npm checks' }
       });
-
-      if (res.exitCode !== 0) {
-        await db.update(runs).set({ status: 'failed', finishedAt: new Date() }).where(eq(runs.id, runId));
-        return;
+    } else {
+      for (const cmd of AUTO_COMMANDS) {
+        const res = await runCmd({ cwd: ws, cmd });
+        if (res.exitCode !== 0) {
+          await db.update(runs).set({ status: 'failed', finishedAt: new Date() }).where(eq(runs.id, runId));
+          return;
+        }
       }
     }
 
     // commit automatically
-    const addRes = await runCmd({ cwd: ws, cmd: 'git add -A' });
-    if (addRes.exitCode !== 0) {
-      await db.update(runs).set({ status: 'failed', finishedAt: new Date() }).where(eq(runs.id, runId));
-      return;
-    }
+    await runCmd({ cwd: ws, cmd: 'git add -A' });
 
     const commitMsg = `ocdash: apply patch for ${taskId ?? runId}`;
     const commitRes = await runCmd({ cwd: ws, cmd: `git commit -m "${commitMsg.replace(/"/g, "'")}"` });
-
-    const cOut = await writeArtifact({ db, projectId, runId, stepId, kind: 'stdout', name: 'git commit stdout', content: commitRes.stdout });
-    const cErr = await writeArtifact({ db, projectId, runId, stepId, kind: 'stderr', name: 'git commit stderr', content: commitRes.stderr });
-
-    await appendEventRow(db, {
-      id: newId('evt'),
-      ts: nowIso(),
-      seq: seq++,
-      type: 'tool.call.completed',
-      source: 'worker',
-      severity: commitRes.exitCode === 0 ? 'info' : 'error',
-      project_id: projectId,
-      task_id: taskId ?? undefined,
-      run_id: runId,
-      step_id: stepId,
-      payload: {
-        tool: 'git.commit',
-        args: { message: commitMsg },
-        result: { exit_code: commitRes.exitCode, stdout_artifact_id: cOut, stderr_artifact_id: cErr }
-      }
-    });
 
     if (commitRes.exitCode !== 0) {
       await db.update(runs).set({ status: 'failed', finishedAt: new Date() }).where(eq(runs.id, runId));
