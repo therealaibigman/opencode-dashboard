@@ -20,10 +20,13 @@ export const taskStatusEnum = pgEnum('task_status', [
 
 export const runStatusEnum = pgEnum('run_status', [
   'queued',
+  'claimed',
   'running',
   'needs_approval',
+  'retry_wait',
   'failed',
   'succeeded',
+  'cancelling',
   'cancelled'
 ]);
 
@@ -161,6 +164,14 @@ export const runs = pgTable(
 
     status: runStatusEnum('status').notNull().default('queued'),
     modelProfile: text('model_profile').notNull().default('balanced'),
+    // Scheduler/executor fields (authoritative orchestrator state)
+    claimedBy: text('claimed_by'),
+    claimedAt: timestamp('claimed_at', { withTimezone: true }),
+    heartbeatAt: timestamp('heartbeat_at', { withTimezone: true }),
+    attemptCount: integer('attempt_count').notNull().default(0),
+    nextEligibleAt: timestamp('next_eligible_at', { withTimezone: true }),
+    priority: integer('priority').notNull().default(0),
+    loopIndex: integer('loop_index').notNull().default(0),
 
     // Which worker claimed/executed the run (useful for debugging multi-worker setups)
     workerId: text('worker_id'),

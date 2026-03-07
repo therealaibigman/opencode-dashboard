@@ -18,6 +18,7 @@ import { ensurePushedOrPr } from '@ocdash/shared/github';
 
 import { requireEnv } from './env.js';
 import { opencodeRun } from './opencode.js';
+import { schedulerMain } from './scheduler.js';
 const DATABASE_URL = requireEnv('DATABASE_URL');
 const POLL_MS = Number(process.env.WORKER_POLL_INTERVAL_MS ?? '750');
 
@@ -366,6 +367,21 @@ async function processRun(db: any, runId: string) {
   if (!projectId) throw new Error(`Run ${runId} missing projectId`);
 
   if (runRow?.status === 'cancelled') return;
+
+  // Heartbeat: mark liveness so a future scheduler can reap stuck runs.
+  let hbStop = false;
+  const hbTimer = setInterval(() => {
+    void (async () => {
+      if (hbStop) return;
+      try {
+        await db.update(runs).set({ heartbeatAt: new Date() } as any).where(eq(runs.id, runId));
+      } catch {
+        // ignore
+      }
+    })();
+  }, Number(process.env.OC_DASH_HEARTBEAT_MS ?? '2000'));
+
+  try {
 
   const projRows = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
   const proj = projRows[0];
@@ -1708,9 +1724,20 @@ Task: ${taskId ?? '(none)'}
 
     await db.update(runs).set({ status: 'failed', finishedAt: new Date() }).where(eq(runs.id, runId));
   }
+  } finally {
+    hbStop = true;
+    clearInterval(hbTimer);
+  }
+
 }
 
 async function main() {
+  const mode = String(process.env.OC_DASH_MODE ?? "worker").trim();
+  if (mode === "scheduler") {
+    await schedulerMain();
+    return;
+  }
+
   const { db } = makeDb(DATABASE_URL);
 
     let backoffMs = 0;
@@ -1719,7 +1746,12 @@ async function main() {
   while (true) {
     let queued: { id: string }[] = [];
     try {
-      queued = await db.select({ id: runs.id }).from(runs).where(eq(runs.status, 'queued')).limit(1);
+      queued = await db
+        .select({ id: runs.id })
+        .from(runs)
+        .where(sql`status in ('claimed', 'queued')`)
+        .orderBy(sql`case when status='claimed' then 0 else 1 end`, runs.createdAt)
+        .limit(1);
       backoffMs = 0;
     } catch (err) {
       backoffMs = backoffMs ? Math.min(backoffMs * 2, 10_000) : 250;
@@ -1733,8 +1765,8 @@ async function main() {
       try {
         const claimed = await db
           .update(runs)
-          .set({ status: 'running', startedAt: new Date(), workerId: WORKER_ID })
-          .where(and(eq(runs.id, runId), eq(runs.status, 'queued')))
+          .set({ status: 'running', startedAt: new Date(), workerId: WORKER_ID, heartbeatAt: new Date() } as any)
+          .where(and(eq(runs.id, runId), sql`status in ('claimed', 'queued')`))
           .returning({ id: runs.id });
         if (!claimed.length) continue;
 
