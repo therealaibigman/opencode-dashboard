@@ -1,15 +1,15 @@
 # OpenCode Dashboard (ocdash)
 
-A local-first control plane for running `opencode run` against real project workspaces.
+A local-first control plane for running OpenCode-style work against **real project workspaces**.
 
-This is not a chatbot toy. It’s a pipeline runner with receipts:
+This is not a chatbot toy. It’s an orchestration + pipeline runner with receipts:
 
-- Projects (local path mirror or git repo clone)
-- Tasks (Kanban, DB-backed ordering, archive/restore)
-- Runs (plan/execute, events timeline, artifacts)
-- Approval gates (diff-based, allowlist-first)
-- Publish (PR for existing repos, direct push for bootstrap repos)
-- Threads + Messages (DB-backed chat history tied to runs/tasks)
+- **Projects** (local path mirror or git repo clone)
+- **Tasks** (Kanban, ordering, archive/restore)
+- **Runs** (plan/execute + timeline + artifacts)
+- **Approval gates** (plan approval, patch approval)
+- **Pipelines (GSD)** (graph-driven multi-step runs)
+- **Multi-worker orchestration spine** (scheduler claims, workers execute, heartbeats + retries)
 
 Deployed basePath: **`/ocdash`**
 
@@ -17,27 +17,57 @@ Deployed basePath: **`/ocdash`**
 
 ## What it does
 
-### Core workflow
+### Core workflow (non-pipeline)
 
 1) Create a task (Chat or Kanban)
-2) Run **Plan** → produces a JSON plan artifact → requires approval
+2) Queue a **Plan** run → produces a plan artifact → may require approval
 3) Approve plan → queues an **Execute** run linked to the plan
 4) Execute run may:
    - do nothing
    - generate a unified diff (patch artifact)
    - auto-apply + checks + commit + publish (if allowed)
-   - or stop at **needs_approval**
+   - or stop at `needs_approval`
 
-### Run safety
+### Pipelines (GSD)
 
-Execute runs parse fenced diffs:
+GSD runs are **pipeline runs**: a single Run references a `pipeline_id`, and the worker executes a DAG of steps (`run_steps`) in topological “waves”.
 
-```diff
-... unified diff ...
-```
+Use this when you want **plan → execute → review → publish** (or any graph) as one tracked unit.
 
-- If policy allows and approvals aren’t required, worker auto-applies.
-- Otherwise it stops at `needs_approval` and you approve/reject.
+---
+
+## Architecture: authoritative orchestrator spine
+
+This repo now supports **bounded concurrency** and **multi-worker execution**.
+
+### Roles
+
+- **Scheduler**: leader-elected loop (Postgres advisory lock). Claims eligible queued runs up to a global limit.
+- **Workers**: execute runs, write `heartbeat_at`, and move runs through statuses.
+
+### Key DB fields
+
+- `runs.claimed_by`, `runs.claimed_at`: scheduler claim ownership
+- `runs.heartbeat_at`: worker liveness
+- `runs.attempt_count`, `runs.next_eligible_at`: retries + backoff
+- `runs.priority`, `runs.loop_index`: scheduling controls
+
+### Run statuses (enum)
+
+Includes the original statuses plus:
+- `claimed`
+- `retry_wait`
+- `cancelling`
+
+### Stuck-run reaping
+
+Scheduler reaps stuck runs:
+- **Claim timeout**: `claimed` with no heartbeat for `OC_DASH_STUCK_CLAIM_MS`
+- **Heartbeat timeout**: stale `heartbeat_at` for `OC_DASH_STUCK_HEARTBEAT_MS`
+
+Reaping increments `attempt_count`, sets `next_eligible_at` (small exponential backoff), and eventually marks `failed` at `OC_DASH_MAX_ATTEMPTS`.
+
+See: `apps/worker/src/scheduler.ts`
 
 ---
 
@@ -67,16 +97,17 @@ export DATABASE_URL="postgres://USER:PASS@localhost:5432/ocdash"
 npm run db:migrate
 ```
 
-### Run dev
+---
+
+## Running (dev)
+
+### All apps
 
 ```bash
 npm run dev
-# web: http://localhost:3000/ocdash
 ```
 
-### Run worker
-
-In a second terminal:
+### Worker only (dev)
 
 ```bash
 npm run worker
@@ -84,28 +115,79 @@ npm run worker
 
 ---
 
+## Running (authoritative scheduler + multiple workers)
+
+You run **one scheduler** and **N workers**.
+
+### Manual (foreground)
+
+```bash
+# scheduler
+OC_DASH_MODE=scheduler npm -w @ocdash/worker run dev
+
+# worker 1
+OC_DASH_MODE=worker OC_DASH_WORKER_ID=worker-1 npm -w @ocdash/worker run dev
+
+# worker 2
+OC_DASH_MODE=worker OC_DASH_WORKER_ID=worker-2 npm -w @ocdash/worker run dev
+```
+
+### systemd (recommended)
+
+This repo includes an installer that sets up:
+- `ocdash-scheduler.service`
+- `ocdash-worker@.service` (templated; instances become worker IDs)
+
+```bash
+sudo ./scripts/install-systemd-orchestrator.sh \
+  --repo /home/exedev/.openclaw/workspace/opencode-dashboard \
+  --user exedev \
+  --workers worker-1,worker-2,worker-3
+```
+
+Units live in:
+- `infra/systemd/ocdash-scheduler.service`
+- `infra/systemd/ocdash-worker@.service`
+
+---
+
 ## Configuration (.env)
 
-Key variables:
+### Required
 
-- `DATABASE_URL` (required)
-- `WORKER_POLL_INTERVAL_MS` (worker poll interval)
+- `DATABASE_URL`
+
+### Orchestration / concurrency
+
+- `OC_DASH_MODE=worker|scheduler`
+- `OC_DASH_WORKER_ID=worker-1` (for workers)
+- `OC_DASH_MAX_ACTIVE_RUNS_GLOBAL=3`
+- `OC_DASH_MAX_ACTIVE_MUTATION_RUNS_PER_PROJECT=1`
+- `OC_DASH_SCHEDULER_TICK_MS=750`
+
+### Stuck-run reaping
+
+- `OC_DASH_STUCK_CLAIM_MS=30000`
+- `OC_DASH_STUCK_HEARTBEAT_MS=60000`
+- `OC_DASH_MAX_ATTEMPTS=5`
+
+### Worker runtime
+
+- `OC_DASH_HEARTBEAT_MS=2000`
 - `PROJECT_WORKSPACES_ROOT` (default: `~/.openclaw/workspace/opencode-workspaces`)
 
-OpenCode:
-
-- `OPENCODE_MODEL` (optional)
-- `OPENCODE_TIMEOUT_MS` (optional)
-- `OPENCODE_STUB=1` to run without calling real opencode
-
-Safety / approvals:
+### Safety / approvals
 
 - `OC_DASH_REQUIRE_APPROVAL=1` forces execute diffs to require approval
 - `OC_DASH_AUTO_COMMANDS="npm test,npm run lint,npm run typecheck"`
 
-Worker identity:
+---
 
-- `OC_DASH_WORKER_ID=worker-1` (optional)
+## Admin / Observability
+
+- Health: `GET /ocdash/api/health`
+- Admin retries/backoff view: `GET /ocdash/admin/runs`
+  - shows `attempt_count` (reaped/retried) and computed backoff from `next_eligible_at`
 
 ---
 
@@ -119,20 +201,10 @@ Settings tab is **local** (stored in browser localStorage):
 
 ---
 
-## Deployment
+## Deployment notes
 
-### systemd (example)
-
-- `infra/systemd/ocdash-web.service`
-- `infra/systemd/ocdash-worker.service`
-
-### nginx (example)
-
-- `infra/nginx/ocdash.conf`
-
-### Health
-
-- `/ocdash/api/health` gives DB + opencode + gh status.
+- Nginx example: `infra/nginx/ocdash.conf`
+- systemd examples: `infra/systemd/*`
 
 ---
 
