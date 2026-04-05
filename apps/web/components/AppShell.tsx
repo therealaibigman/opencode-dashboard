@@ -21,7 +21,7 @@ type ApprovalRequested = {
 };
 
 
-type RunMeta = { run: { id: string; kind: 'execute' | 'plan' | 'review'; status: string } };
+type RunMeta = { run: { id: string; kind: 'execute' | 'plan' | 'review' | 'publish'; status: string } };
 export function AppShell({ title, children }: { title?: string; children: React.ReactNode }) {
   const BASE = useBasePath();
   const router = useRouter();
@@ -47,7 +47,7 @@ export function AppShell({ title, children }: { title?: string; children: React.
 
   // approval modal state
   const [approval, setApproval] = useState<ApprovalRequested | null>(null);
-  const [approvalKind, setApprovalKind] = useState<'execute' | 'plan' | 'review' | null>(null);
+  const [approvalKind, setApprovalKind] = useState<'execute' | 'plan' | 'review' | 'publish' | null>(null);
   const [approvalErr, setApprovalErr] = useState<string | null>(null);
   const [approvalBusy, setApprovalBusy] = useState<'approve' | 'reject' | null>(null);
 

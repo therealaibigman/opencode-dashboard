@@ -40,7 +40,7 @@ type Task = {
 type RunSummary = {
   id: string;
   taskId: string | null;
-  kind: 'execute' | 'plan' | 'review';
+  kind: 'execute' | 'plan' | 'review' | 'publish';
   status: string;
   prUrl: string | null;
   createdAt: string;

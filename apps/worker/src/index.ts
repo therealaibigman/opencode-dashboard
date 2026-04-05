@@ -356,6 +356,130 @@ async function ensureReadme(ws: string) {
 }
 
 
+
+async function processPublishRun({ db, runId, runRow }: { db: any; runId: string; runRow: any }) {
+  const projectId = runRow?.projectId as string | undefined;
+  const taskId = (runRow?.taskId as string | null | undefined) ?? null;
+  const threadId = ((runRow as any)?.threadId as string | null | undefined) ?? null;
+
+  if (!projectId) throw new Error(`Run ${runId} missing projectId`);
+
+  // Mark running and set heartbeat.
+  await db
+    .update(runs)
+    .set({ status: 'running', startedAt: new Date(), workerId: WORKER_ID, heartbeatAt: new Date() } as any)
+    .where(and(eq(runs.id, runId), eq(runs.status, 'claimed' as any)));
+
+  // Heartbeat while publishing (best-effort)
+  let hbStop = false;
+  const hbTimer = setInterval(() => {
+    void (async () => {
+      if (hbStop) return;
+      try {
+        await db.update(runs).set({ heartbeatAt: new Date() } as any).where(eq(runs.id, runId));
+      } catch {
+        // ignore
+      }
+    })();
+  }, Number(process.env.OC_DASH_HEARTBEAT_MS ?? '2000'));
+
+  try {
+    const projRows = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
+    const proj = projRows[0];
+    const baseBranch = String((proj as any)?.defaultBranch ?? 'main') || 'main';
+
+    const prep = await prepareWorkspaceForProject({
+      root: WORKSPACES_ROOT,
+      project: {
+        id: projectId,
+        localPath: (proj as any)?.localPath,
+        repoUrl: (proj as any)?.repoUrl,
+        defaultBranch: (proj as any)?.defaultBranch
+      }
+    });
+    const ws = prep.workspace;
+
+    await ensureGitRepo(ws);
+
+    // Commit whatever is currently in the workspace.
+    await runCmd({ cwd: ws, cmd: 'git add -A' });
+    const commitMsg = `ocdash: publish for ${taskId ?? runId}`;
+    const commitRes = await runCmd({ cwd: ws, cmd: `git commit -m "${commitMsg.replace(/"/g, "'")}"` });
+
+    const cOut = await writeArtifact({ db, projectId, runId, stepId: 'stp_publish', kind: 'stdout', name: 'git commit stdout', content: (commitRes.stdout ?? '') as string });
+    const cErr = await writeArtifact({ db, projectId, runId, stepId: 'stp_publish', kind: 'stderr', name: 'git commit stderr', content: (commitRes.stderr ?? '') as string });
+
+    if (commitRes.exitCode !== 0) {
+      const msg = String(commitRes.stderr ?? commitRes.stdout ?? 'git commit failed');
+      // If nothing changed, treat as success but note it.
+      if (msg.toLowerCase().includes('nothing to commit')) {
+        await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: 'Publish: nothing to commit.' });
+        await db.update(runs).set({ status: 'succeeded', finishedAt: new Date() } as any).where(eq(runs.id, runId));
+        return;
+      }
+
+      await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: `Publish failed at git commit: ${msg}` });
+      await db.update(runs).set({ status: 'failed', finishedAt: new Date() } as any).where(eq(runs.id, runId));
+      return;
+    }
+
+    const taskTitle = taskId
+      ? String((await db.select({ title: tasks.title }).from(tasks).where(eq(tasks.id, taskId)).limit(1))[0]?.title ?? '')
+      : '';
+
+    const prTitle = `ocdash: ${taskTitle || taskId || runId}`;
+    const prBody = `Automated changes from OpenCode Dashboard.
+
+Run: ${runId}
+Project: ${projectId}
+Task: ${taskId ?? '(none)'}
+`;
+
+    const prRes = await ensurePushedOrPr({ ws, runId, baseBranch, title: prTitle, body: prBody });
+
+    if (!prRes.ok) {
+      await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: `Publish failed: ${prRes.error ?? 'unknown error'}` });
+      await db.update(runs).set({ status: 'failed', finishedAt: new Date() } as any).where(eq(runs.id, runId));
+      return;
+    }
+
+    if (prRes.mode === 'pr') {
+      await db
+        .update(runs)
+        .set({ prUrl: prRes.url, prBranch: prRes.branch, prNumber: prRes.number ?? null, prRepo: prRes.repo ?? null, prState: prRes.state ?? null } as any)
+        .where(eq(runs.id, runId));
+      const prArtId = await writeArtifact({ db, projectId, runId, stepId: 'stp_publish', kind: 'github_pr', name: 'GitHub PR', content: prRes.url + '\n' });
+      await appendEventRow(db, {
+        id: newId('evt'),
+        ts: nowIso(),
+        seq: 0,
+        type: 'tool.call.completed',
+        source: 'worker',
+        severity: 'info',
+        project_id: projectId,
+        task_id: taskId ?? undefined,
+        run_id: runId,
+        step_id: 'stp_publish',
+        payload: { tool: 'github.pr.create', url: prRes.url, branch: prRes.branch, number: prRes.number ?? null, repo: prRes.repo ?? null, state: prRes.state ?? null, artifact_id: prArtId }
+      });
+      await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: `Published: PR ${prRes.url}` });
+    } else {
+      await db.update(runs).set({ prUrl: null, prBranch: prRes.branch, prNumber: null, prRepo: null, prState: 'pushed' } as any).where(eq(runs.id, runId));
+      await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: `Published: pushed branch ${prRes.branch}` });
+    }
+
+    if (taskId) {
+      await maybeUpdateTaskStatus({ db, projectId, taskId, runId, nextStatus: 'done' });
+    }
+
+    await db.update(runs).set({ status: 'succeeded', finishedAt: new Date() } as any).where(eq(runs.id, runId));
+
+  } finally {
+    hbStop = true;
+    try { clearInterval(hbTimer); } catch {}
+  }
+}
+
 async function processReviewRun({ db, runId, runRow }: { db: any; runId: string; runRow: any }) {
   const projectId = runRow?.projectId as string | undefined;
   const taskId = (runRow?.taskId as string | null | undefined) ?? null;
@@ -504,6 +628,11 @@ async function processRun(db: any, runId: string) {
 
   if (kind === 'review') {
     await processReviewRun({ db, runId, runRow });
+    return;
+  }
+
+  if (kind === 'publish') {
+    await processPublishRun({ db, runId, runRow });
     return;
   }
 

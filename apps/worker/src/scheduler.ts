@@ -1,7 +1,7 @@
 import { and, asc, eq, isNull, lte, or, sql } from 'drizzle-orm';
 
 import { makeDb } from '@ocdash/db/client';
-import { runs } from '@ocdash/db/schema';
+import { events, messages, runs, tasks } from '@ocdash/db/schema';
 import { newId } from '@ocdash/shared';
 
 import { requireEnv } from './env.js';
@@ -143,8 +143,7 @@ async function maybeEnqueueExecuteRunsFromReviewVerdicts(db: any) {
     ) a ON true
     WHERE rv.kind = 'review'::run_kind
       AND rv.status = 'succeeded'::run_status
-      AND rv.loop_index < ${RALPH_MAX_LOOPS}
-      AND NOT EXISTS (
+            AND NOT EXISTS (
         SELECT 1 FROM runs nx
         WHERE nx.parent_run_id = rv.id
           AND nx.kind = 'execute'::run_kind
@@ -166,7 +165,72 @@ async function maybeEnqueueExecuteRunsFromReviewVerdicts(db: any) {
       verdict = '';
     }
 
+    if (verdict === 'pass') {
+      // enqueue publish if missing
+      const runId = newId('run');
+      const inserted = await db.execute(sql`
+        INSERT INTO runs (id, project_id, task_id, parent_run_id, thread_id, pipeline_id, kind, status, model_profile, loop_index)
+        SELECT
+          ${runId},
+          ${r.project_id},
+          ${r.task_id},
+          ${r.review_run_id},
+          ${r.thread_id},
+          NULL,
+          'publish'::run_kind,
+          'queued'::run_status,
+          ${r.model_profile},
+          ${r.loop_index}
+        WHERE NOT EXISTS (
+          SELECT 1 FROM runs nx
+          WHERE nx.parent_run_id = ${r.review_run_id}
+            AND nx.kind = 'publish'::run_kind
+        )
+        RETURNING id
+      `);
+
+      const ins = (inserted as any)?.rows ?? inserted;
+      if (Array.isArray(ins) && ins.length) n += 1;
+      continue;
+    }
+
     if (verdict !== 'changes_requested') continue;
+
+    if (Number(r.loop_index ?? 0) >= RALPH_MAX_LOOPS) {
+      // maxed: mark task blocked and emit an event
+      try {
+        if (r.task_id) {
+          await db.update(tasks).set({ status: 'blocked', updatedAt: new Date() } as any).where(eq(tasks.id, r.task_id));
+        }
+        await db.insert(events).values({
+          id: newId('evt'),
+          ts: new Date(),
+          seq: 0,
+          type: 'ralph.max_loops_reached',
+          source: 'scheduler',
+          severity: 'warn',
+          projectId: r.project_id,
+          taskId: r.task_id,
+          threadId: r.thread_id,
+          runId: r.review_run_id,
+          stepId: null,
+          correlationId: null,
+          payload: { loop_index: r.loop_index, max_loops: RALPH_MAX_LOOPS, execute_run_id: r.execute_run_id }
+        } as any);
+        if (r.thread_id) {
+          await db.insert(messages).values({
+            id: newId('msg'),
+            projectId: r.project_id,
+            threadId: r.thread_id,
+            role: 'system',
+            contentMd: `Ralph loop stopped: max loops reached (loop_index=${r.loop_index}, max=${RALPH_MAX_LOOPS}).`
+          } as any);
+        }
+      } catch {
+        // ignore
+      }
+      continue;
+    }
 
     const runId = newId('run');
     const inserted = await db.execute(sql`

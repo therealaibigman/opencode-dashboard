@@ -30,7 +30,7 @@ export const runStatusEnum = pgEnum('run_status', [
   'cancelled'
 ]);
 
-export const runKindEnum = pgEnum('run_kind', ['execute', 'plan', 'review']);
+export const runKindEnum = pgEnum('run_kind', ['execute', 'plan', 'review', 'publish']);
 
 export const projects = pgTable('projects', {
   id: text('id').primaryKey(),
