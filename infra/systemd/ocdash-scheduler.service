@@ -1,0 +1,19 @@
+[Unit]
+Description=OpenCode Dashboard Scheduler
+After=network.target
+
+[Service]
+Type=simple
+User=__USER__
+Group=__USER__
+WorkingDirectory=__REPO_DIR__
+EnvironmentFile=__REPO_DIR__/.env
+Environment=OC_DASH_MODE=scheduler
+# Optional: tune global concurrency (default 3 in code)
+# Environment=OC_DASH_MAX_ACTIVE_RUNS_GLOBAL=3
+ExecStart=/usr/bin/npm -w @ocdash/worker run dev
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
