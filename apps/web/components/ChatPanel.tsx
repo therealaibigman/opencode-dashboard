@@ -72,7 +72,7 @@ export function ChatPanel() {
     );
   }
 
-  async function queueRun({ taskId, kind, threadId }: { taskId?: string; kind: 'execute' | 'plan'; threadId?: string }) {
+  async function queueRun({ taskId, kind, threadId }: { taskId?: string; kind: 'execute' | 'plan' | 'review'; threadId?: string }) {
     const res = await fetch(api.runs, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

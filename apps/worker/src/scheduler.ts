@@ -2,6 +2,7 @@ import { and, asc, eq, isNull, lte, or, sql } from 'drizzle-orm';
 
 import { makeDb } from '@ocdash/db/client';
 import { runs } from '@ocdash/db/schema';
+import { newId } from '@ocdash/shared';
 
 import { requireEnv } from './env.js';
 
@@ -59,6 +60,59 @@ export async function schedulerMain() {
   }
 }
 
+
+async function maybeEnqueueReviewRuns(db: any) {
+  // Ralph loop (phase 1): after an execute run succeeds, enqueue a review run if missing.
+  // Intentionally simple: scheduler only spawns review; it does not yet react to verdicts.
+
+  const candidates = await db.execute(sql`
+    SELECT r.id, r.project_id, r.task_id, r.thread_id, r.model_profile, r.loop_index
+    FROM runs r
+    WHERE r.kind = 'execute'::run_kind
+      AND r.status = 'succeeded'::run_status
+      AND NOT EXISTS (
+        SELECT 1 FROM runs c
+        WHERE c.parent_run_id = r.id
+          AND c.kind = 'review'::run_kind
+      )
+    ORDER BY r.finished_at DESC NULLS LAST, r.created_at DESC
+    LIMIT 10
+  `);
+
+  const rows = (candidates as any)?.rows ?? candidates;
+  if (!Array.isArray(rows) || rows.length === 0) return;
+
+  let n = 0;
+  for (const r of rows) {
+    const runId = newId('run');
+    const inserted = await db.execute(sql`
+      INSERT INTO runs (id, project_id, task_id, parent_run_id, thread_id, pipeline_id, kind, status, model_profile, loop_index)
+      SELECT
+        ${runId},
+        ${r.project_id},
+        ${r.task_id},
+        ${r.id},
+        ${r.thread_id},
+        NULL,
+        'review'::run_kind,
+        'queued'::run_status,
+        ${r.model_profile},
+        ${r.loop_index}
+      WHERE NOT EXISTS (
+        SELECT 1 FROM runs c
+        WHERE c.parent_run_id = ${r.id}
+          AND c.kind = 'review'::run_kind
+      )
+      RETURNING id
+    `);
+
+    const ins = (inserted as any)?.rows ?? inserted;
+    if (Array.isArray(ins) && ins.length) n += 1;
+  }
+
+  if (n > 0) console.warn(`[scheduler] enqueued review runs: ${n}`);
+}
+
 async function reapStuckRuns(db: any) {
   // Strategy:
   // - If a run is "claimed" but never heartbeated within STUCK_CLAIM_MS, requeue it.
@@ -107,6 +161,7 @@ async function reapStuckRuns(db: any) {
 }
 
 async function tick(db: any) {
+  await maybeEnqueueReviewRuns(db);
   await reapStuckRuns(db);
 
   // Count active (running/claimed) globally

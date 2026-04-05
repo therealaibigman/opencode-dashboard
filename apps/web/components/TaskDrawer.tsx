@@ -41,7 +41,7 @@ type RunRow = {
   taskId: string | null;
   parentRunId: string | null;
   threadId: string | null;
-  kind: 'execute' | 'plan';
+  kind: 'execute' | 'plan' | 'review';
   status: string;
   modelProfile: string;
   prUrl: string | null;

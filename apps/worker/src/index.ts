@@ -355,6 +355,140 @@ async function ensureReadme(ws: string) {
   }
 }
 
+
+async function processReviewRun({ db, runId, runRow }: { db: any; runId: string; runRow: any }) {
+  const projectId = runRow?.projectId as string | undefined;
+  const taskId = (runRow?.taskId as string | null | undefined) ?? null;
+  const threadId = ((runRow as any)?.threadId as string | null | undefined) ?? null;
+  const parentRunId = ((runRow as any)?.parentRunId as string | null | undefined) ?? null;
+
+  if (!projectId) throw new Error(`Run ${runId} missing projectId`);
+
+  // Mark running and set heartbeat.
+  await db
+    .update(runs)
+    .set({ status: 'running', startedAt: new Date(), workerId: WORKER_ID, heartbeatAt: new Date() } as any)
+    .where(and(eq(runs.id, runId), eq(runs.status, 'claimed' as any)));
+
+  // Heartbeat while reviewing (best-effort)
+  let hbStop = false;
+  const hbTimer = setInterval(() => {
+    void (async () => {
+      if (hbStop) return;
+      try {
+        await db.update(runs).set({ heartbeatAt: new Date() } as any).where(eq(runs.id, runId));
+      } catch {
+        // ignore
+      }
+    })();
+  }, Number(process.env.OC_DASH_HEARTBEAT_MS ?? '2000'));
+
+  // Fetch the patch (if any) from the parent execute run.
+  let patchText = '';
+  if (parentRunId) {
+    const prow = await db
+      .select()
+      .from(artifacts)
+      .where(and(eq(artifacts.runId, parentRunId), eq(artifacts.kind, 'patch')))
+      .orderBy(desc(artifacts.createdAt))
+      .limit(1);
+    patchText = String(prow?.[0]?.contentText ?? '');
+  }
+
+  const clipped = clipPreview(patchText, 8000);
+
+  // Ask OpenCode to behave like a reviewer and emit a strict JSON verdict.
+  const prompt =
+    `You are the reviewer. Review the proposed changes (unified diff) and decide if they are acceptable.
+` +
+    `Return ONLY a JSON object with:
+` +
+    `- verdict: "pass" | "changes_requested"
+` +
+    `- must_fix: string[]
+` +
+    `- suggestions: string[]
+` +
+    `- notes: string
+
+` +
+    (clipped.trim()
+      ? `Diff:
+
+\`\`\`diff
+${clipped}
+\`\`\`
+`
+      : `No diff was produced by the execute run. Return verdict="pass" with a note.`);
+
+  const projRows = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
+  const proj = projRows[0];
+  const prep = await prepareWorkspaceForProject({
+    root: WORKSPACES_ROOT,
+    project: {
+      id: projectId,
+      localPath: (proj as any)?.localPath,
+      repoUrl: (proj as any)?.repoUrl,
+      defaultBranch: (proj as any)?.defaultBranch
+    }
+  });
+  const ws = prep.workspace;
+
+  const result = await opencodeRun({
+    cwd: ws,
+    message: prompt,
+    timeoutMs: Number(process.env.OPENCODE_TIMEOUT_MS ?? '600000'),
+    model: (process.env.OPENCODE_MODEL ?? '').trim() || undefined
+  });
+
+  const verdictText = result.exitCode === 0 ? (result.stdout || '').trim() : '';
+  const content = verdictText || JSON.stringify({ verdict: 'changes_requested', must_fix: ['review tool failed'], suggestions: [], notes: result.stderr || '' }, null, 2);
+
+  const stepId = 'stp_review';
+  const artId = await writeArtifact({
+    db,
+    projectId,
+    runId,
+    stepId,
+    kind: 'review_verdict',
+    name: 'review verdict',
+    content
+  });
+
+  await appendEventRow(db, {
+    id: newId('evt'),
+    ts: nowIso(),
+    seq: 0,
+    type: 'artifact.created',
+    source: 'worker',
+    severity: 'info',
+    project_id: projectId,
+    task_id: taskId ?? undefined,
+    run_id: runId,
+    step_id: stepId,
+    payload: { artifact: { id: artId, kind: 'review_verdict', name: 'review verdict' }, parent_run_id: parentRunId }
+  });
+
+  await appendThreadMessage({
+    db,
+    projectId,
+    taskId,
+    threadId,
+    role: 'assistant',
+    content: `Review complete. Verdict artifact: ${artId}`
+  });
+
+  await db.update(runs).set({ status: 'succeeded', finishedAt: new Date() } as any).where(eq(runs.id, runId));
+
+  hbStop = true;
+  try {
+    clearInterval(hbTimer);
+  } catch {
+    // ignore
+  }
+}
+
+
 async function processRun(db: any, runId: string) {
   const runRows = await db.select().from(runs).where(eq(runs.id, runId)).limit(1);
   const runRow = runRows[0];
@@ -367,6 +501,11 @@ async function processRun(db: any, runId: string) {
   if (!projectId) throw new Error(`Run ${runId} missing projectId`);
 
   if (runRow?.status === 'cancelled') return;
+
+  if (kind === 'review') {
+    await processReviewRun({ db, runId, runRow });
+    return;
+  }
 
   // Heartbeat: mark liveness so a future scheduler can reap stuck runs.
   let hbStop = false;
