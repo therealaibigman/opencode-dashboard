@@ -76,6 +76,8 @@ See: `apps/worker/src/scheduler.ts`
 
 This is the fastest path to a known-good local install.
 
+### A) systemd (recommended)
+
 ```bash
 # 1) install deps
 npm install
@@ -86,7 +88,7 @@ export DATABASE_URL=postgres://oc:oc@localhost:5432/oc
 # 3) migrate
 npm run db:migrate
 
-# 4) bring up scheduler + workers (systemd)
+# 4) bring up scheduler + workers
 sudo ./scripts/install-systemd-orchestrator.sh   --repo "$(pwd)"   --user "$USER"   --workers worker-1,worker-2,worker-3
 
 # 5) run web (dev)
@@ -94,10 +96,32 @@ npm -w @ocdash/web run dev
 # open: http://localhost:3000/ocdash
 ```
 
+### B) foreground (no systemd)
+
+```bash
+# 1) install deps
+npm install
+
+# 2) set DB
+export DATABASE_URL=postgres://oc:oc@localhost:5432/oc
+
+# 3) migrate
+npm run db:migrate
+
+# 4) terminal 1: scheduler
+OC_DASH_MODE=scheduler npm -w @ocdash/worker run dev
+
+# 5) terminal 2..4: workers
+OC_DASH_MODE=worker OC_DASH_WORKER_ID=worker-1 npm -w @ocdash/worker run dev
+OC_DASH_MODE=worker OC_DASH_WORKER_ID=worker-2 npm -w @ocdash/worker run dev
+OC_DASH_MODE=worker OC_DASH_WORKER_ID=worker-3 npm -w @ocdash/worker run dev
+
+# 6) terminal 5: web
+npm -w @ocdash/web run dev
+```
+
 Notes:
 - The systemd units currently run the worker in **dev/watch** mode (`tsx watch`). For true prod, swap to a build + start flow.
-- If you don’t want systemd, run the scheduler/workers manually (see below).
-
 ## Install
 
 ### Prereqs
