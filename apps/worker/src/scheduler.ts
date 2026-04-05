@@ -80,7 +80,10 @@ async function reapStuckRuns(db: any) {
     )
     UPDATE runs r
     SET
-      status = CASE WHEN (s.attempt_count + 1) >= ${MAX_ATTEMPTS} THEN 'failed' ELSE 'queued' END,
+      status = CASE
+        WHEN (s.attempt_count + 1) >= ${MAX_ATTEMPTS} THEN 'failed'::run_status
+        ELSE 'queued'::run_status
+      END,
       attempt_count = s.attempt_count + 1,
       next_eligible_at = CASE
         WHEN (s.attempt_count + 1) >= ${MAX_ATTEMPTS} THEN NULL
