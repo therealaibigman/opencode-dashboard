@@ -480,7 +480,7 @@ export function AppShell({ title, children }: { title?: string; children: React.
 
           <div className="relative mx-4 w-full max-w-xl rounded-2xl border border-yellow-500/30 bg-black/80 p-4 shadow-neon">
             <div className="mb-1 text-sm font-semibold text-yellow-100">Approval required</div>
-            <div className="text-xs text-yellow-100/80">
+            <div className="text-xs text-yellow-300">
               Run: <span className="break-all text-yellow-50">{approval.run_id ?? '(unknown)'}</span>
             </div>
             {approval.payload?.reason ? (

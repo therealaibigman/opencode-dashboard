@@ -504,7 +504,7 @@ export function RunDetails({ runId }: { runId: string }) {
 
       {prError ? (
         <div className="rounded-xl border border-yellow-500/25 bg-yellow-950/20 p-3 text-sm text-yellow-50">
-          Publish failed: <span className="text-yellow-100/80">{prError}</span>
+          Publish failed: <span className="text-yellow-300">{prError}</span>
         </div>
       ) : null}
 
@@ -535,7 +535,7 @@ export function RunDetails({ runId }: { runId: string }) {
       {run?.status === 'needs_approval' ? (
         <div className="rounded-xl border border-yellow-500/30 bg-yellow-950/20 p-3">
           <div className="mb-2 text-sm font-medium text-yellow-100">Approval required</div>
-          <div className="mb-3 text-xs text-yellow-100/80">
+          <div className="mb-3 text-xs text-yellow-300">
             {run.kind === 'plan'
               ? 'This run produced a plan. Approve to queue an execute run.'
               : 'This run generated a patch but policy blocked auto-apply. You can approve to apply the patch, run checks, commit, and publish (PR for existing repos; direct push for new repos).'}
