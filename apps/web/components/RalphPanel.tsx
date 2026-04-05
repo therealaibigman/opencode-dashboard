@@ -48,13 +48,13 @@ function fmtShort(iso?: string | null) {
   return d.toLocaleTimeString(undefined, { hour12: false });
 }
 
-function StepCell({ r, label }: { r: LoopRun | null; label: string }) {
+function StepCell({ r, label, basePath }: { r: LoopRun | null; label: string; basePath: string }) {
   if (!r) return <div className="text-[11px] text-zinc-500">—</div>;
   return (
     <div className="space-y-1">
       <div className="flex items-center gap-2">
         <span className={`rounded-full px-2 py-1 text-[11px] ring-1 ${pill(r.status)}`}>{label}: {r.status}</span>
-        <a className="text-[11px] text-matrix-200 hover:underline" href={`/runs/${encodeURIComponent(r.id)}`}>open</a>
+        <a className="text-[11px] text-matrix-200 hover:underline" href={`${basePath}/runs/${encodeURIComponent(r.id)}`}>open</a>
       </div>
       <div className="text-[10px] text-zinc-500">{fmtShort(r.created_at)}{r.finished_at ? ` → ${fmtShort(r.finished_at)}` : ''}</div>
       {r.pr_url ? (
@@ -116,7 +116,7 @@ export function RalphPanel() {
       );
       await refresh();
       // keep user in context: open the new run
-      window.location.href = `/runs/${encodeURIComponent(data.run_id)}`;
+      window.location.href = `${BASE}/runs/${encodeURIComponent(data.run_id)}`;
     } catch (e: any) {
       setErr(String(e?.message ?? e));
     } finally {
@@ -169,9 +169,9 @@ export function RalphPanel() {
                 <div key={lp.loop_index} className="rounded-xl border border-matrix-500/10 bg-black/15 p-3">
                   <div className="mb-2 text-[11px] text-zinc-400">loop_index: {lp.loop_index}</div>
                   <div className="grid gap-3 md:grid-cols-3">
-                    <StepCell r={lp.execute} label="execute" />
-                    <StepCell r={lp.review} label="review" />
-                    <StepCell r={lp.publish} label="publish" />
+                    <StepCell r={lp.execute} label="execute" basePath={BASE} />
+                    <StepCell r={lp.review} label="review" basePath={BASE} />
+                    <StepCell r={lp.publish} label="publish" basePath={BASE} />
                   </div>
 
                   {lp.review_verdict?.contentText ? (
