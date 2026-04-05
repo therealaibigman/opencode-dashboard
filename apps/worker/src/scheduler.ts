@@ -21,6 +21,9 @@ const STUCK_CLAIM_MS = Number(process.env.OC_DASH_STUCK_CLAIM_MS ?? '30000'); //
 const STUCK_HEARTBEAT_MS = Number(process.env.OC_DASH_STUCK_HEARTBEAT_MS ?? '60000'); // running/claimed and heartbeat stopped
 const MAX_ATTEMPTS = Number(process.env.OC_DASH_MAX_ATTEMPTS ?? '5');
 
+// Ralph loop
+const RALPH_MAX_LOOPS = Number(process.env.OC_DASH_RALPH_MAX_LOOPS ?? '3');
+
 // Advisory lock key: stable 64-bit int.
 // Any constant is fine as long as it's consistent across scheduler instances.
 const SCHEDULER_LOCK_KEY = BigInt(process.env.OC_DASH_SCHEDULER_LOCK_KEY ?? '740290112233');
@@ -113,6 +116,88 @@ async function maybeEnqueueReviewRuns(db: any) {
   if (n > 0) console.warn(`[scheduler] enqueued review runs: ${n}`);
 }
 
+async function maybeEnqueueExecuteRunsFromReviewVerdicts(db: any) {
+  // Ralph loop (phase 2): if a review verdict requests changes, enqueue another execute run with loop_index+1.
+  // We do NOT auto-publish yet.
+
+  const cand = await db.execute(sql`
+    SELECT
+      rv.id AS review_run_id,
+      rv.project_id,
+      rv.task_id,
+      rv.thread_id,
+      rv.model_profile,
+      rv.loop_index,
+      ex.id AS execute_run_id,
+      ex.parent_run_id AS plan_run_id,
+      a.content_text AS verdict_text
+    FROM runs rv
+    JOIN runs ex ON ex.id = rv.parent_run_id
+    LEFT JOIN LATERAL (
+      SELECT content_text
+      FROM artifacts
+      WHERE run_id = rv.id
+        AND kind = 'review_verdict'
+      ORDER BY created_at DESC
+      LIMIT 1
+    ) a ON true
+    WHERE rv.kind = 'review'::run_kind
+      AND rv.status = 'succeeded'::run_status
+      AND rv.loop_index < ${RALPH_MAX_LOOPS}
+      AND NOT EXISTS (
+        SELECT 1 FROM runs nx
+        WHERE nx.parent_run_id = rv.id
+          AND nx.kind = 'execute'::run_kind
+      )
+    ORDER BY rv.finished_at DESC NULLS LAST, rv.created_at DESC
+    LIMIT 10
+  `);
+
+  const rows = (cand as any)?.rows ?? cand;
+  if (!Array.isArray(rows) || rows.length === 0) return;
+
+  let n = 0;
+  for (const r of rows) {
+    let verdict = '';
+    try {
+      const txt = String(r.verdict_text ?? '').trim();
+      if (txt) verdict = String(JSON.parse(txt)?.verdict ?? '');
+    } catch {
+      verdict = '';
+    }
+
+    if (verdict !== 'changes_requested') continue;
+
+    const runId = newId('run');
+    const inserted = await db.execute(sql`
+      INSERT INTO runs (id, project_id, task_id, parent_run_id, thread_id, pipeline_id, kind, status, model_profile, loop_index)
+      SELECT
+        ${runId},
+        ${r.project_id},
+        ${r.task_id},
+        ${r.plan_run_id},
+        ${r.thread_id},
+        NULL,
+        'execute'::run_kind,
+        'queued'::run_status,
+        ${r.model_profile},
+        (${r.loop_index}::int + 1)
+      WHERE NOT EXISTS (
+        SELECT 1 FROM runs nx
+        WHERE nx.parent_run_id = ${r.review_run_id}
+          AND nx.kind = 'execute'::run_kind
+      )
+      RETURNING id
+    `);
+
+    const ins = (inserted as any)?.rows ?? inserted;
+    if (Array.isArray(ins) && ins.length) n += 1;
+  }
+
+  if (n > 0) console.warn(`[scheduler] enqueued loop execute runs: ${n}`);
+}
+
+
 async function reapStuckRuns(db: any) {
   // Strategy:
   // - If a run is "claimed" but never heartbeated within STUCK_CLAIM_MS, requeue it.
@@ -161,6 +246,7 @@ async function reapStuckRuns(db: any) {
 }
 
 async function tick(db: any) {
+  await maybeEnqueueExecuteRunsFromReviewVerdicts(db);
   await maybeEnqueueReviewRuns(db);
   await reapStuckRuns(db);
 

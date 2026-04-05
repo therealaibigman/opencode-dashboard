@@ -678,12 +678,42 @@ async function processRun(db: any, runId: string) {
     // ignore
   }
 
+  // If there is a recent review verdict for this task, include it as context (ralph loop).
+  let latestReviewVerdictJson = '';
+  try {
+    if (taskId) {
+      const rrows = await db.execute(sql`
+        SELECT a.content_text
+        FROM artifacts a
+        JOIN runs r ON r.id = a.run_id
+        WHERE r.project_id = ${projectId}
+          AND r.task_id = ${taskId}
+          AND r.kind = 'review'::run_kind
+          AND a.kind = 'review_verdict'
+        ORDER BY a.created_at DESC
+        LIMIT 1
+      `);
+      const rows = (rrows as any)?.rows ?? rrows;
+      if (Array.isArray(rows) && rows.length) latestReviewVerdictJson = String(rows[0]?.content_text ?? '').trim();
+    }
+  } catch {
+    // ignore
+  }
+
 const baseTask = taskId ? `Task: ${taskTitle}\n\nDetails:\n${taskBody}` : `Project ${projectId}`;
 
   const msg =
     kind === 'plan'
       ? `${baseTask}\n\nYou are planning work. Output a plan as JSON inside a fenced \`\`\`json block with:\n{\n  \"summary\": string,\n  \"steps\": [{\"title\": string, \"details\": string, \"risk\": \"low\"|\"med\"|\"high\"}],\n  \"files\": string[],\n  \"commands\": string[]\n}\n\nDo NOT output a diff. Do NOT execute anything.\n`
-      : `${baseTask}\n\n${approvedPlanJson ? `Approved plan (JSON):\n\n\`\`\`json\n${approvedPlanJson}\n\`\`\`\n\nFollow the approved plan.\n\n` : ''}Return a unified diff in a fenced \`\`\`diff block if code changes are needed. Include full diff headers (diff --git, ---/+++).\n\nDo the next best action.`;
+      : `${baseTask}\n\n${approvedPlanJson ? `Approved plan (JSON):\n\n\`\`\`json\n${approvedPlanJson}\n\`\`\`\n\nFollow the approved plan.\n\n` : ''}${latestReviewVerdictJson ? `Latest review verdict (JSON):
+
+\`\`\`json
+${latestReviewVerdictJson}
+\`\`\`
+
+Address all must_fix items.
+
+` : ''}Return a unified diff in a fenced \`\`\`diff block if code changes are needed. Include full diff headers (diff --git, ---/+++).\n\nDo the next best action.`;
 
   const direct = String(runRow?.modelProfile ?? '').trim();
   const directModel = direct.includes('/') ? direct : '';
