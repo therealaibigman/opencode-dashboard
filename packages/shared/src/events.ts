@@ -35,6 +35,11 @@ export type EventType =
   | 'approval.requested'
   | 'approval.resolved'
 
+
+  // ralph loop
+  | 'ralph.resume'
+  | 'ralph.max_loops_reached'
+
   // artifacts
   | 'artifact.created';
 

@@ -6,8 +6,9 @@ import { KanbanPanel } from '../components/KanbanPanel';
 import { RunsPanel } from '../components/RunsPanel';
 import { SettingsPanel } from '../components/SettingsPanel';
 import { GsdPanel } from '../components/GsdPanel';
+import { RalphPanel } from '../components/RalphPanel';
 
-type TabKey = 'chat' | 'kanban' | 'runs' | 'gsd' | 'settings';
+type TabKey = 'chat' | 'kanban' | 'runs' | 'gsd' | 'ralph' | 'settings';
 
 export default async function HomePage({
   searchParams
@@ -17,7 +18,7 @@ export default async function HomePage({
   const sp = await searchParams;
   const tab = (sp.tab ?? '').toLowerCase();
   const initial: TabKey =
-    tab === 'runs' ? 'runs' : tab === 'kanban' ? 'kanban' : tab === 'gsd' ? 'gsd' : tab === 'settings' ? 'settings' : 'chat';
+    tab === 'runs' ? 'runs' : tab === 'kanban' ? 'kanban' : tab === 'gsd' ? 'gsd' : tab === 'ralph' ? 'ralph' : tab === 'settings' ? 'settings' : 'chat';
 
   return (
     <ProjectProvider>
@@ -28,6 +29,7 @@ export default async function HomePage({
           kanban={<KanbanPanel />}
           runs={<RunsPanel />}
           gsd={<GsdPanel />}
+          ralph={<RalphPanel />}
           settings={<SettingsPanel />}
         />
       </AppShell>

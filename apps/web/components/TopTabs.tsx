@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 
-type TabKey = 'chat' | 'kanban' | 'runs' | 'gsd' | 'settings';
+type TabKey = 'chat' | 'kanban' | 'runs' | 'gsd' | 'ralph' | 'settings';
 
 export function TopTabs({
   initial = 'chat',
@@ -10,6 +10,7 @@ export function TopTabs({
   kanban,
   runs,
   gsd,
+  ralph,
   settings
 }: {
   initial?: TabKey;
@@ -17,6 +18,7 @@ export function TopTabs({
   kanban: React.ReactNode;
   runs: React.ReactNode;
   gsd: React.ReactNode;
+  ralph: React.ReactNode;
   settings: React.ReactNode;
 }) {
   const [tab, setTab] = useState<TabKey>(initial);
@@ -75,6 +77,16 @@ export function TopTabs({
             GSD
           </button>
           <button
+            onClick={() => setTab('ralph')}
+            className={
+              tab === 'ralph'
+                ? 'rounded-lg bg-matrix-500/15 px-3 py-2 text-sm text-matrix-100 ring-1 ring-matrix-500/40'
+                : 'rounded-lg px-3 py-2 text-sm text-zinc-300 hover:text-zinc-100'
+            }
+          >
+            Ralph
+          </button>
+          <button
             onClick={() => setTab('settings')}
             className={
               tab === 'settings'
@@ -89,7 +101,7 @@ export function TopTabs({
 
       <section className="flex-1 rounded-2xl border border-matrix-500/20 bg-bg-2/40 shadow-neon backdrop-blur">
         <div className="h-full p-4 md:p-6">
-          {tab === 'chat' ? chat : tab === 'kanban' ? kanban : tab === 'runs' ? runs : tab === 'gsd' ? gsd : settings}
+          {tab === 'chat' ? chat : tab === 'kanban' ? kanban : tab === 'runs' ? runs : tab === 'gsd' ? gsd : tab === 'ralph' ? ralph : settings}
         </div>
       </section>
     </div>
