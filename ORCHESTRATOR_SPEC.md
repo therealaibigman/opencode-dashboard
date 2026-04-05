@@ -7,6 +7,12 @@ This document captures the “proper path” to make ocdash a control center for
 
 It borrows the key idea from Symphony: a **single authoritative orchestrator state** that survives restarts and prevents duplicate execution.
 
+
+## Background / rationale (historical note)
+
+The initial motivation for the scheduler/executor split was inspired by Symphony’s “authoritative orchestrator” idea.
+If you want the original comparison write-up, see the git history for `future-notes/symphony_comparison.md` (now removed).
+
 ## Goals
 
 - Many repos (git URLs + local paths)
