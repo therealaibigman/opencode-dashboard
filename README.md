@@ -71,6 +71,33 @@ See: `apps/worker/src/scheduler.ts`
 
 ---
 
+
+## Quickstart (authoritative scheduler + 3 workers)
+
+This is the fastest path to a known-good local install.
+
+```bash
+# 1) install deps
+npm install
+
+# 2) set DB
+export DATABASE_URL=postgres://oc:oc@localhost:5432/oc
+
+# 3) migrate
+npm run db:migrate
+
+# 4) bring up scheduler + workers (systemd)
+sudo ./scripts/install-systemd-orchestrator.sh   --repo "$(pwd)"   --user "$USER"   --workers worker-1,worker-2,worker-3
+
+# 5) run web (dev)
+npm -w @ocdash/web run dev
+# open: http://localhost:3000/ocdash
+```
+
+Notes:
+- The systemd units currently run the worker in **dev/watch** mode (`tsx watch`). For true prod, swap to a build + start flow.
+- If you don’t want systemd, run the scheduler/workers manually (see below).
+
 ## Install
 
 ### Prereqs
@@ -182,6 +209,50 @@ Units live in:
 - `OC_DASH_AUTO_COMMANDS="npm test,npm run lint,npm run typecheck"`
 
 ---
+
+
+## Chaos test (prove reaping + retries)
+
+This is the “built status” proof that the orchestration spine works under failure.
+
+### Goal
+
+- Start a run.
+- Kill a worker mid-run.
+- Confirm the scheduler reaps it and retries (attempt_count increments, backoff is visible).
+
+### Steps
+
+1) Open the dashboard and start an **execute** run (or a pipeline run) for any project.
+
+2) In another terminal, kill one worker hard:
+
+```bash
+sudo systemctl kill -s SIGKILL ocdash-worker@worker-2.service
+```
+
+3) Watch admin view:
+
+- Open: `http://localhost:3000/ocdash/admin/runs`
+- Find the affected run.
+- Verify:
+  - `attempt_count` increases
+  - `next_eligible_at` shows backoff (counts down)
+  - status returns to `queued` (or `failed` if it hits max attempts)
+
+4) Bring the worker back:
+
+```bash
+sudo systemctl start ocdash-worker@worker-2.service
+```
+
+5) Confirm the run completes.
+
+### Knobs
+
+- `OC_DASH_STUCK_CLAIM_MS` (default 30s)
+- `OC_DASH_STUCK_HEARTBEAT_MS` (default 60s)
+- `OC_DASH_MAX_ATTEMPTS` (default 5)
 
 ## Admin / Observability
 
