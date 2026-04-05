@@ -466,6 +466,9 @@ export function AppShell({ title, children }: { title?: string; children: React.
 
         <div className="mt-6 text-[11px] text-zinc-500">
           basePath: <span className="text-zinc-300">{BASE || '(none)'}</span>
+          <div className="mt-2">
+            <a className="text-[11px] text-matrix-200/90 hover:underline" href="/admin/runs">Admin → Runs (retries)</a>
+          </div>
         </div>
       </aside>
 
