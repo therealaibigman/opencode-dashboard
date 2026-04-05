@@ -15,6 +15,11 @@ const MAX_ACTIVE_MUTATION_RUNS_PER_PROJECT = Number(process.env.OC_DASH_MAX_ACTI
 
 const TICK_MS = Number(process.env.OC_DASH_SCHEDULER_TICK_MS ?? '750');
 
+// Stuck-run reaping
+const STUCK_CLAIM_MS = Number(process.env.OC_DASH_STUCK_CLAIM_MS ?? '30000'); // claimed but never heartbeated
+const STUCK_HEARTBEAT_MS = Number(process.env.OC_DASH_STUCK_HEARTBEAT_MS ?? '60000'); // running/claimed and heartbeat stopped
+const MAX_ATTEMPTS = Number(process.env.OC_DASH_MAX_ATTEMPTS ?? '5');
+
 // Advisory lock key: stable 64-bit int.
 // Any constant is fine as long as it's consistent across scheduler instances.
 const SCHEDULER_LOCK_KEY = BigInt(process.env.OC_DASH_SCHEDULER_LOCK_KEY ?? '740290112233');
@@ -54,7 +59,53 @@ export async function schedulerMain() {
   }
 }
 
+async function reapStuckRuns(db: any) {
+  // Strategy:
+  // - If a run is "claimed" but never heartbeated within STUCK_CLAIM_MS, requeue it.
+  // - If a run's heartbeat is stale beyond STUCK_HEARTBEAT_MS, requeue it.
+  // - Increment attempt_count. If exceeds MAX_ATTEMPTS, mark failed.
+  // - next_eligible_at gets a small exponential backoff (1s,2s,4s...) capped at 60s.
+  const rows = await db.execute(sql`
+    WITH stuck AS (
+      SELECT id, attempt_count
+      FROM runs
+      WHERE status IN ('running','claimed')
+        AND (
+          (status = 'claimed' AND heartbeat_at IS NULL AND claimed_at IS NOT NULL AND claimed_at < now() - (${STUCK_CLAIM_MS}::int * interval '1 millisecond'))
+          OR
+          (heartbeat_at IS NOT NULL AND heartbeat_at < now() - (${STUCK_HEARTBEAT_MS}::int * interval '1 millisecond'))
+        )
+      ORDER BY COALESCE(heartbeat_at, claimed_at) ASC
+      LIMIT 25
+    )
+    UPDATE runs r
+    SET
+      status = CASE WHEN (s.attempt_count + 1) >= ${MAX_ATTEMPTS} THEN 'failed' ELSE 'queued' END,
+      attempt_count = s.attempt_count + 1,
+      next_eligible_at = CASE
+        WHEN (s.attempt_count + 1) >= ${MAX_ATTEMPTS} THEN NULL
+        ELSE now() + (LEAST(60, GREATEST(1, power(2, s.attempt_count)::int))::text || ' seconds')::interval
+      END,
+      claimed_by = NULL,
+      claimed_at = NULL,
+      worker_id = NULL,
+      heartbeat_at = NULL
+    FROM stuck s
+    WHERE r.id = s.id
+    RETURNING r.id, r.status
+  `);
+
+  const n = Number((rows as any)?.rows?.length ?? (rows as any)?.length ?? 0);
+  if (n > 0) {
+    const failed = ((rows as any)?.rows ?? rows).filter((x: any) => x.status === 'failed').length;
+    const requeued = n - failed;
+    console.warn(`[scheduler] reaped stuck runs: ${n} (requeued=${requeued}, failed=${failed})`);
+  }
+}
+
 async function tick(db: any) {
+  await reapStuckRuns(db);
+
   // Count active (running/claimed) globally
   const activeRows = await db.execute(sql`
     SELECT count(*)::int AS n
