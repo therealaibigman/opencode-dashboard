@@ -278,6 +278,26 @@ sudo systemctl start ocdash-worker@worker-2.service
 - `OC_DASH_STUCK_HEARTBEAT_MS` (default 60s)
 - `OC_DASH_MAX_ATTEMPTS` (default 5)
 
+
+## Ralph loop (coder ↔ reviewer ↔ publish)
+
+ocdash implements a simple “Ralph loop”:
+
+- **execute** run produces a patch artifact
+- scheduler auto-enqueues a **review** run
+- review run emits a `review_verdict` artifact (JSON with `verdict=pass|changes_requested`)
+- scheduler reacts:
+  - `changes_requested` → enqueue next **execute** with `loop_index + 1`
+  - `pass` → enqueue **publish**
+  - if `loop_index` reaches the max, the task is marked **blocked** and the loop stops
+
+Config:
+- `OC_DASH_RALPH_MAX_LOOPS=3` (default)
+
+UI:
+- Use the **Ralph** tab to view the loop ladder per task.
+- If a task is blocked, **Resume anyway** enqueues a fresh execute run.
+
 ## Admin / Observability
 
 - Health: `GET /ocdash/api/health`
