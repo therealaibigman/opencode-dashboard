@@ -17,11 +17,48 @@ type ApprovalRequested = {
   project_id?: string;
   run_id?: string;
   task_id?: string;
-  payload?: { reason?: string; patch_artifact_id?: string; plan_artifact_id?: string };
+  payload?: {
+    reason?: string;
+    patch_artifact_id?: string;
+    plan_artifact_id?: string;
+    stdout_artifact_id?: string;
+    policy_level?: string;
+  };
 };
 
 
 type RunMeta = { run: { id: string; kind: 'execute' | 'plan' | 'review' | 'publish'; status: string } };
+
+type Artifact = { id: string; kind: string; name: string; content_text: string };
+
+function parseUnifiedDiffTouchedFiles(diff: string): string[] {
+  const files = new Set<string>();
+  const lines = String(diff ?? '').split('\n');
+  for (const ln of lines) {
+    // diff --git a/path b/path
+    if (ln.startsWith('diff --git ')) {
+      const m = ln.match(/^diff --git a\/(.+?) b\/(.+)$/);
+      if (m?.[2]) files.add(m[2]);
+    }
+    // +++ b/path
+    if (ln.startsWith('+++ ')) {
+      const m = ln.match(/^\+\+\+\s+b\/(.+)$/);
+      if (m?.[1] && m[1] !== '/dev/null') files.add(m[1]);
+    }
+  }
+  return Array.from(files);
+}
+
+function detectRiskFlags(files: string[], diffText: string): string[] {
+  const flags: string[] = [];
+  const f = files.join('\n').toLowerCase();
+  if (/(^|\n)(package-lock\.json|pnpm-lock\.yaml|yarn\.lock)(\n|$)/i.test(f)) flags.push('lockfile change');
+  if (/(^|\n)package\.json(\n|$)/i.test(f)) flags.push('dependency change');
+  if (/\bdrizzle\b\/|migrations\b|\.sql$/i.test(f)) flags.push('db/migration change');
+  if (/(^|\n)(\.env|\.env\.|dockerfile|docker-compose\.yml|nginx|systemd|infra\/)(\n|$)/i.test(f)) flags.push('infra/config change');
+  if (/BEGIN (RSA|OPENSSH|EC) PRIVATE KEY|AKIA[0-9A-Z]{16}|xox[baprs]-/i.test(diffText)) flags.push('possible secret in diff');
+  return flags;
+}
 export function AppShell({ title, children }: { title?: string; children: React.ReactNode }) {
   const BASE = useBasePath();
   const router = useRouter();
@@ -51,6 +88,11 @@ export function AppShell({ title, children }: { title?: string; children: React.
   const [approvalKind, setApprovalKind] = useState<'execute' | 'plan' | 'review' | 'publish' | null>(null);
   const [approvalErr, setApprovalErr] = useState<string | null>(null);
   const [approvalBusy, setApprovalBusy] = useState<'approve' | 'reject' | null>(null);
+  const [approvalDetails, setApprovalDetails] = useState<{
+    files: string[];
+    riskFlags: string[];
+    previewText: string | null;
+  } | null>(null);
 
   // de-dupe across reconnects
   const lastApprovalIdRef = useRef<string | null>(null);
@@ -73,6 +115,30 @@ export function AppShell({ title, children }: { title?: string; children: React.
     }),
     [BASE]
   );
+
+  async function loadApprovalDetails(a: ApprovalRequested) {
+    const patchId = a?.payload?.patch_artifact_id ?? '';
+    const planId = a?.payload?.plan_artifact_id ?? '';
+    const stdoutId = a?.payload?.stdout_artifact_id ?? '';
+
+    const artId = patchId || planId || stdoutId;
+    if (!artId) {
+      setApprovalDetails(null);
+      return;
+    }
+
+    try {
+      const res = await fetch(`${BASE}/api/artifacts/${encodeURIComponent(artId)}`, { cache: 'no-store' });
+      const data = await j<{ artifact: Artifact }>(res);
+      const txt = String(data.artifact?.content_text ?? '');
+      const files = patchId ? parseUnifiedDiffTouchedFiles(txt) : [];
+      const riskFlags = patchId ? detectRiskFlags(files, txt) : [];
+      const previewText = txt.length > 1600 ? `${txt.slice(0, 1600)}\n…(truncated)…` : txt;
+      setApprovalDetails({ files, riskFlags, previewText });
+    } catch {
+      setApprovalDetails(null);
+    }
+  }
 
   // hydrate source fields when selection changes
   useEffect(() => {
@@ -250,6 +316,9 @@ export function AppShell({ title, children }: { title?: string; children: React.
         setApprovalBusy(null);
         setApproval(data);
         setApprovalKind(null);
+        setApprovalDetails(null);
+
+        void loadApprovalDetails(data);
 
         void (async () => {
           try {
@@ -507,11 +576,59 @@ export function AppShell({ title, children }: { title?: string; children: React.
                 <span className="text-zinc-400">reason:</span> {String(approval.payload.reason)}
               </div>
             ) : null}
+
+            {approval.payload?.policy_level ? (
+              <div className="mt-1 text-[11px] text-zinc-400">
+                policy: <span className="text-zinc-200">{String(approval.payload.policy_level)}</span>
+              </div>
+            ) : null}
             {approval.payload?.patch_artifact_id ? (
               <div className="mt-1 break-all text-[11px] text-zinc-400">patch artifact: {approval.payload.patch_artifact_id}</div>
             ) : null}
             {approval.payload?.plan_artifact_id ? (
               <div className="mt-1 break-all text-[11px] text-zinc-400">plan artifact: {approval.payload.plan_artifact_id}</div>
+            ) : null}
+
+            {approval.payload?.stdout_artifact_id ? (
+              <div className="mt-1 break-all text-[11px] text-zinc-400">stdout artifact: {approval.payload.stdout_artifact_id}</div>
+            ) : null}
+
+            {approvalDetails ? (
+              <div className="mt-3 rounded-xl border border-matrix-500/15 bg-black/30 p-3">
+                {approvalDetails.files?.length ? (
+                  <div className="mb-2">
+                    <div className="text-[11px] font-medium text-matrix-200/90">Files touched</div>
+                    <div className="mt-1 space-y-1 text-[11px] text-zinc-200">
+                      {approvalDetails.files.slice(0, 10).map((f) => (
+                        <div key={f} className="break-all">{f}</div>
+                      ))}
+                      {approvalDetails.files.length > 10 ? (
+                        <div className="text-[10px] text-zinc-500">+{approvalDetails.files.length - 10} more</div>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : null}
+
+                {approvalDetails.riskFlags?.length ? (
+                  <div className="mb-2">
+                    <div className="text-[11px] font-medium text-yellow-100">Risk flags</div>
+                    <ul className="mt-1 list-disc space-y-1 pl-4 text-[11px] text-yellow-50">
+                      {approvalDetails.riskFlags.map((x) => (
+                        <li key={x}>{x}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+
+                {approvalDetails.previewText ? (
+                  <details>
+                    <summary className="cursor-pointer select-none text-[11px] text-zinc-200">Preview artifact</summary>
+                    <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-words text-[10px] text-zinc-200">
+                      {approvalDetails.previewText}
+                    </pre>
+                  </details>
+                ) : null}
+              </div>
             ) : null}
 
             {approvalErr ? (
