@@ -23,6 +23,7 @@ type ApprovalRequested = {
     plan_artifact_id?: string;
     stdout_artifact_id?: string;
     policy_level?: string;
+    policy_decision_artifact_id?: string;
   };
 };
 
@@ -120,6 +121,7 @@ export function AppShell({ title, children }: { title?: string; children: React.
     const patchId = a?.payload?.patch_artifact_id ?? '';
     const planId = a?.payload?.plan_artifact_id ?? '';
     const stdoutId = a?.payload?.stdout_artifact_id ?? '';
+    const polId = a?.payload?.policy_decision_artifact_id ?? '';
 
     const artId = patchId || planId || stdoutId;
     if (!artId) {
@@ -134,7 +136,20 @@ export function AppShell({ title, children }: { title?: string; children: React.
       const files = patchId ? parseUnifiedDiffTouchedFiles(txt) : [];
       const riskFlags = patchId ? detectRiskFlags(files, txt) : [];
       const previewText = txt.length > 1600 ? `${txt.slice(0, 1600)}\n…(truncated)…` : txt;
-      setApprovalDetails({ files, riskFlags, previewText });
+
+      let policyDecisionText: string | null = null;
+      if (polId) {
+        try {
+          const pr = await fetch(`${BASE}/api/artifacts/${encodeURIComponent(polId)}`, { cache: 'no-store' });
+          const pdata = await j<{ artifact: Artifact }>(pr);
+          const ptxt = String(pdata.artifact?.content_text ?? '').trim();
+          policyDecisionText = ptxt ? (ptxt.length > 1200 ? `${ptxt.slice(0, 1200)}\n…(truncated)…` : ptxt) : null;
+        } catch {
+          policyDecisionText = null;
+        }
+      }
+
+      setApprovalDetails({ files, riskFlags, previewText: policyDecisionText ? `${previewText}\n\n---\nPolicy decision:\n${policyDecisionText}` : previewText });
     } catch {
       setApprovalDetails(null);
     }

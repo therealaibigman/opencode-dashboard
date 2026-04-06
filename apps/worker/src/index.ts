@@ -253,6 +253,67 @@ async function writeArtifact({
   return id;
 }
 
+async function writePolicyDecisionArtifact({
+  db,
+  projectId,
+  taskId,
+  runId,
+  stepId,
+  policyLevel,
+  reason,
+  patchArtifactId,
+  planArtifactId,
+  stdoutArtifactId
+}: {
+  db: any;
+  projectId: string;
+  taskId: string | null;
+  runId: string;
+  stepId: string;
+  policyLevel: string;
+  reason: string;
+  patchArtifactId?: string | null;
+  planArtifactId?: string | null;
+  stdoutArtifactId?: string | null;
+}) {
+  const payload = {
+    version: 1,
+    policy_level: policyLevel,
+    reason,
+    refs: {
+      patch_artifact_id: patchArtifactId ?? null,
+      plan_artifact_id: planArtifactId ?? null,
+      stdout_artifact_id: stdoutArtifactId ?? null
+    }
+  };
+
+  const artId = await writeArtifact({
+    db,
+    projectId,
+    runId,
+    stepId,
+    kind: 'policy_decision',
+    name: 'policy decision',
+    content: JSON.stringify(payload, null, 2)
+  });
+
+  await appendEventRow(db, {
+    id: newId('evt'),
+    ts: nowIso(),
+    seq: 0,
+    type: 'artifact.created',
+    source: 'worker',
+    severity: 'info',
+    project_id: projectId,
+    task_id: taskId ?? undefined,
+    run_id: runId,
+    step_id: stepId,
+    payload: { artifact: { id: artId, kind: 'policy_decision', name: 'policy decision' } }
+  });
+
+  return artId;
+}
+
 async function appendThreadMessage({
   db,
   projectId,
@@ -1325,6 +1386,17 @@ Address all must_fix items.
   });
 
   if (!execGate.ok && !patch) {
+    const polArtId = await writePolicyDecisionArtifact({
+      db,
+      projectId,
+      taskId,
+      runId,
+      stepId,
+      policyLevel,
+      reason: `${execGate.reason} but no diff produced`,
+      stdoutArtifactId: stdoutId
+    });
+
     await db.update(runs).set({ status: 'needs_approval' }).where(eq(runs.id, runId));
     await appendEventRow(db, {
       id: newId('evt'),
@@ -1339,7 +1411,8 @@ Address all must_fix items.
       payload: {
         reason: `${execGate.reason} but no diff produced`,
         stdout_artifact_id: stdoutId,
-        policy_level: policyLevel
+        policy_level: policyLevel,
+        policy_decision_artifact_id: polArtId
       }
     });
 
@@ -1406,6 +1479,17 @@ Address all must_fix items.
       });
 
       if (!execGate.ok) {
+        const polArtId = await writePolicyDecisionArtifact({
+          db,
+          projectId,
+          taskId,
+          runId,
+          stepId,
+          policyLevel,
+          reason: String(execGate.reason ?? 'approval required'),
+          patchArtifactId
+        });
+
         await db.update(runs).set({ status: 'needs_approval' }).where(eq(runs.id, runId));
         await appendEventRow(db, {
           id: newId('evt'),
@@ -1417,7 +1501,7 @@ Address all must_fix items.
           project_id: projectId,
           task_id: taskId ?? undefined,
           run_id: runId,
-          payload: { reason: execGate.reason, patch_artifact_id: patchArtifactId, policy_level: policyLevel }
+          payload: { reason: execGate.reason, patch_artifact_id: patchArtifactId, policy_level: policyLevel, policy_decision_artifact_id: polArtId }
         });
 
         if (kind === 'execute') {
