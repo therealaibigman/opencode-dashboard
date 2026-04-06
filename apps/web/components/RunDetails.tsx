@@ -183,7 +183,8 @@ export function RunDetails({ runId }: { runId: string }) {
       thread: (id: string) => `${BASE}/api/threads/${encodeURIComponent(id)}`,
       messages: (id: string) => `${BASE}/api/threads/${encodeURIComponent(id)}/messages`,
       eventsStream: `${BASE}/api/runs/${encodeURIComponent(runId)}/events/stream`,
-      steps: `${BASE}/api/runs/${encodeURIComponent(runId)}/steps`
+      steps: `${BASE}/api/runs/${encodeURIComponent(runId)}/steps`,
+      retryStep: (stepId: string) => `${BASE}/api/runs/${encodeURIComponent(runId)}/steps/${encodeURIComponent(stepId)}/retry`
     }),
     [BASE, runId]
   );
@@ -192,6 +193,7 @@ export function RunDetails({ runId }: { runId: string }) {
   const [artifacts, setArtifacts] = useState<ArtifactStub[]>([]);
   const [openArtifact, setOpenArtifact] = useState<ArtifactFull | null>(null);
   const [steps, setSteps] = useState<StepRow[]>([]);
+  const [retryingStepId, setRetryingStepId] = useState<string | null>(null);
   const [thread, setThread] = useState<ThreadRow | null>(null);
   const [messages, setMessages] = useState<MessageRow[]>([]);
   const [newMsg, setNewMsg] = useState('');
@@ -231,6 +233,25 @@ export function RunDetails({ runId }: { runId: string }) {
       setSteps(data.steps);
     } catch {
       // ignore
+    }
+  }
+
+  async function retryStep(stepId: string) {
+    const st = steps.find((s) => s.id === stepId);
+    if (!st) return;
+
+    const ok = window.confirm(`Retry step "${st.name}"?\n\nThis will reset the step to queued.`);
+    if (!ok) return;
+
+    setErr(null);
+    setRetryingStepId(stepId);
+    try {
+      await j(await fetch(api.retryStep(stepId), { method: 'POST' }));
+      await refreshSteps();
+    } catch (e: any) {
+      setErr(String(e?.message ?? e));
+    } finally {
+      setRetryingStepId(null);
     }
   }
 
@@ -759,7 +780,18 @@ export function RunDetails({ runId }: { runId: string }) {
               <div key={st.id} className="rounded-xl border border-matrix-500/10 bg-black/20 p-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="text-sm font-medium text-zinc-100">{st.name}</div>
-                  <div className="text-[11px] text-zinc-400">{st.status}</div>
+                  <div className="flex items-center gap-2">
+                    <div className="text-[11px] text-zinc-400">{st.status}</div>
+                    {st.status === 'failed' ? (
+                      <button
+                        onClick={() => void retryStep(st.id)}
+                        disabled={retryingStepId === st.id}
+                        className="rounded-lg bg-yellow-500/15 px-2 py-1 text-[11px] text-yellow-100 ring-1 ring-yellow-500/25 hover:bg-yellow-500/20 disabled:opacity-60"
+                      >
+                        {retryingStepId === st.id ? 'Retrying…' : 'Retry'}
+                      </button>
+                    ) : null}
+                  </div>
                 </div>
                 <div className="mt-1 text-[10px] text-zinc-500 break-all">{st.id}</div>
                 {st.model ? <div className="mt-1 text-[11px] text-zinc-400 break-all">model: {st.model}</div> : null}
