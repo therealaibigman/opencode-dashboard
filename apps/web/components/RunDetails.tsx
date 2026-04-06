@@ -27,6 +27,95 @@ type RunRow = {
 
 type PipelineRow = { id: string; name: string; version: string; graphJson?: any; graph_json?: any };
 
+function stepBadgeClass(status: string) {
+  const s = String(status ?? 'queued');
+  if (s === 'succeeded') return 'bg-matrix-500/15 text-matrix-100 ring-matrix-500/30';
+  if (s === 'failed') return 'bg-red-500/15 text-red-100 ring-red-500/30';
+  if (s === 'running') return 'bg-yellow-500/15 text-yellow-100 ring-yellow-500/30';
+  return 'bg-black/25 text-zinc-200 ring-matrix-500/20';
+}
+
+function PipelineDag({ pipeline, steps }: { pipeline: PipelineRow; steps: StepRow[] }) {
+  const graph = (pipeline as any).graphJson ?? (pipeline as any).graph_json ?? {};
+  const nodes: Array<{ id: string; kind?: string }> = Array.isArray((graph as any)?.nodes) ? (graph as any).nodes : [];
+  const edges: Array<[string, string]> = Array.isArray((graph as any)?.edges) ? (graph as any).edges : [];
+
+  // Map node kind -> step row (best-effort). Pipeline pre-creates run_steps with name=kind.
+  const stepByName = new Map<string, StepRow>();
+  for (const st of steps) stepByName.set(String(st.name), st);
+
+  // Simple topological "waves" layout.
+  const deps = new Map<string, Set<string>>();
+  const out = new Map<string, Set<string>>();
+  for (const n of nodes) {
+    const id = String((n as any)?.id ?? '').trim();
+    if (!id) continue;
+    deps.set(id, new Set());
+    out.set(id, new Set());
+  }
+  for (const [a, b] of edges) {
+    if (!deps.has(a) || !deps.has(b)) continue;
+    deps.get(b)!.add(a);
+    out.get(a)!.add(b);
+  }
+
+  const waves: string[][] = [];
+  const remaining = new Set(Array.from(deps.keys()));
+  while (remaining.size) {
+    const wave: string[] = [];
+    for (const id of Array.from(remaining)) {
+      const d = deps.get(id);
+      if (!d || d.size === 0) wave.push(id);
+    }
+    if (!wave.length) {
+      // cycle or missing nodes; dump remaining into one wave
+      waves.push(Array.from(remaining));
+      break;
+    }
+    waves.push(wave);
+    for (const id of wave) {
+      remaining.delete(id);
+      for (const nxt of out.get(id) ?? []) deps.get(nxt)?.delete(id);
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="text-[11px] text-zinc-500">{nodes.length} nodes • {edges.length} edges</div>
+      <div className="grid gap-3" style={{ gridTemplateColumns: `repeat(${Math.max(1, waves.length)}, minmax(0, 1fr))` }}>
+        {waves.map((wave, wi) => (
+          <div key={wi} className="space-y-2 rounded-xl border border-matrix-500/10 bg-black/15 p-2">
+            <div className="text-[10px] text-zinc-500">wave {wi}</div>
+            {wave.map((nodeId) => {
+              const node = nodes.find((n) => String((n as any).id) === nodeId) as any;
+              const kind = String(node?.kind ?? nodeId);
+              const st = stepByName.get(kind);
+              const status = st?.status ?? 'queued';
+              return (
+                <div key={nodeId} className="rounded-lg border border-matrix-500/10 bg-black/20 p-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="text-xs font-medium text-zinc-100">{kind}</div>
+                    <span className={`rounded-full px-2 py-1 text-[10px] ring-1 ${stepBadgeClass(status)}`}>{status}</span>
+                  </div>
+                  <div className="mt-1 text-[10px] text-zinc-500 break-all">node: {nodeId}</div>
+                  {st ? <div className="mt-1 text-[10px] text-zinc-600 break-all">step: {st.id}</div> : null}
+                </div>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+
+      <details className="rounded-xl border border-matrix-500/10 bg-black/15 p-2">
+        <summary className="cursor-pointer select-none text-[11px] text-zinc-300">edges</summary>
+        <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-words text-[10px] text-zinc-200">
+          {JSON.stringify(edges, null, 2)}
+        </pre>
+      </details>
+    </div>
+  );
+}
+
 type ArtifactStub = {
   id: string;
   project_id: string;
@@ -691,16 +780,8 @@ export function RunDetails({ runId }: { runId: string }) {
             <div className="text-xs text-zinc-200">
               <span className="text-zinc-400">pipeline:</span> {pipeline.name} <span className="text-zinc-500">({pipeline.version})</span>
             </div>
-            <div className="mt-2">
-              <details className="rounded-xl border border-matrix-500/10 bg-black/15 p-3">
-                <summary className="cursor-pointer select-none text-[11px] text-zinc-200">graph</summary>
-                <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-words text-[10px] text-zinc-200">
-                  {JSON.stringify((pipeline as any).graphJson ?? (pipeline as any).graph_json ?? {}, null, 2)}
-                </pre>
-              </details>
-            </div>
-            <div className="mt-3 text-[11px] text-zinc-500">
-              (DAG visual view is next — this is the raw graph for now.)
+            <div className="mt-3">
+              <PipelineDag pipeline={pipeline} steps={steps} />
             </div>
           </div>
         ) : null}
