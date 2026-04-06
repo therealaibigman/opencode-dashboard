@@ -35,7 +35,7 @@ function stepBadgeClass(status: string) {
   return 'bg-black/25 text-zinc-200 ring-matrix-500/20';
 }
 
-function PipelineDag({ pipeline, steps }: { pipeline: PipelineRow; steps: StepRow[] }) {
+function PipelineDag({ pipeline, steps, onRetryStep, retryingStepId }: { pipeline: PipelineRow; steps: StepRow[]; onRetryStep: (stepId: string) => void; retryingStepId: string | null }) {
   const graph = (pipeline as any).graphJson ?? (pipeline as any).graph_json ?? {};
   const nodes: Array<{ id: string; kind?: string }> = Array.isArray((graph as any)?.nodes) ? (graph as any).nodes : [];
   const edges: Array<[string, string]> = Array.isArray((graph as any)?.edges) ? (graph as any).edges : [];
@@ -100,7 +100,18 @@ function PipelineDag({ pipeline, steps }: { pipeline: PipelineRow; steps: StepRo
                 <div key={nodeId} className="rounded-lg border border-matrix-500/10 bg-black/20 p-2">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="text-xs font-medium text-zinc-100">{kind}</div>
-                    <span className={`rounded-full px-2 py-1 text-[10px] ring-1 ${stepBadgeClass(status)}`}>{status}</span>
+                    <div className="flex items-center gap-2">
+                      <span className={`rounded-full px-2 py-1 text-[10px] ring-1 ${stepBadgeClass(status)}`}>{status}</span>
+                      {st && status === 'failed' ? (
+                        <button
+                          onClick={() => onRetryStep(st.id)}
+                          disabled={retryingStepId === st.id}
+                          className="rounded-lg bg-yellow-500/15 px-2 py-1 text-[10px] text-yellow-100 ring-1 ring-yellow-500/25 hover:bg-yellow-500/20 disabled:opacity-60"
+                        >
+                          {retryingStepId === st.id ? '…' : 'Retry'}
+                        </button>
+                      ) : null}
+                    </div>
                   </div>
                   <div className="mt-1 text-[10px] text-zinc-500 break-all">node: {nodeId}</div>
                   {st ? <div className="mt-1 text-[10px] text-zinc-600 break-all">step: {st.id}</div> : null}
@@ -796,7 +807,7 @@ export function RunDetails({ runId }: { runId: string }) {
               <span className="text-zinc-400">pipeline:</span> {pipeline.name} <span className="text-zinc-500">({pipeline.version})</span>
             </div>
             <div className="mt-3">
-              <PipelineDag pipeline={pipeline} steps={steps} />
+              <PipelineDag pipeline={pipeline} steps={steps} onRetryStep={(id) => void retryStep(id)} retryingStepId={retryingStepId} />
             </div>
           </div>
         ) : null}
