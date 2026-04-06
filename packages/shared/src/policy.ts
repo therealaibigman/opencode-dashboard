@@ -1,8 +1,8 @@
 import path from 'path';
 
 export type PolicyDecision =
-  | { ok: true }
-  | { ok: false; reason: string };
+  | { ok: true; code: 'ok'; reason?: string }
+  | { ok: false; code: 'empty' | 'blocked_pattern' | 'not_allowlisted' | 'path_escape' | 'blocked_path'; reason: string };
 
 // Hard blocks: obvious footguns.
 const BLOCK_PATTERNS: RegExp[] = [
@@ -56,17 +56,17 @@ const ALLOW_COMMANDS: RegExp[] = [
 
 export function policyCheckCommand(cmd: string): PolicyDecision {
   const s = cmd.trim();
-  if (!s) return { ok: false, reason: 'empty command' };
+  if (!s) return { ok: false, code: 'empty', reason: 'empty command' };
 
   for (const re of BLOCK_PATTERNS) {
-    if (re.test(s)) return { ok: false, reason: `blocked pattern: ${re}` };
+    if (re.test(s)) return { ok: false, code: 'blocked_pattern', reason: `blocked pattern: ${re}` };
   }
 
   if (!ALLOW_COMMANDS.some((re) => re.test(s))) {
-    return { ok: false, reason: 'command not on allowlist' };
+    return { ok: false, code: 'not_allowlisted', reason: 'command not on allowlist' };
   }
 
-  return { ok: true };
+  return { ok: true, code: 'ok' };
 }
 
 export function policyCheckPath({ workspace, filePath }: { workspace: string; filePath: string }): PolicyDecision {
@@ -74,12 +74,12 @@ export function policyCheckPath({ workspace, filePath }: { workspace: string; fi
   const ws = path.resolve(workspace);
 
   if (!abs.startsWith(ws + path.sep) && abs !== ws) {
-    return { ok: false, reason: `path escapes workspace: ${filePath}` };
+    return { ok: false, code: 'path_escape', reason: `path escapes workspace: ${filePath}` };
   }
 
   for (const re of BLOCK_PATHS) {
-    if (re.test(abs)) return { ok: false, reason: `blocked path: ${abs}` };
+    if (re.test(abs)) return { ok: false, code: 'blocked_path', reason: `blocked path: ${abs}` };
   }
 
-  return { ok: true };
+  return { ok: true, code: 'ok' };
 }

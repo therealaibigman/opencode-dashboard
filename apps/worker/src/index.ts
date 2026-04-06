@@ -63,6 +63,25 @@ function needsApprovalForPolicy(level: PolicyLevel, opts: { kind: string; hasPat
   return { ok: true as const };
 }
 
+function getPlannedCommandsForRun({
+  hasPackageJson,
+  autoCommandsEnv
+}: {
+  hasPackageJson: boolean;
+  autoCommandsEnv: string;
+}) {
+  const autoCmdsRaw = String(autoCommandsEnv ?? '').trim();
+  const cmds = autoCmdsRaw
+    ? autoCmdsRaw.split(',').map((x) => x.trim()).filter(Boolean)
+    : ['npm test', 'npm run lint', 'npm run typecheck'];
+
+  // If there's no package.json, checks won't run even if configured.
+  return {
+    cmds: hasPackageJson ? cmds : [],
+    skipped: !hasPackageJson
+  };
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -261,6 +280,7 @@ async function writePolicyDecisionArtifact({
   stepId,
   policyLevel,
   reason,
+  commandDecisions,
   patchArtifactId,
   planArtifactId,
   stdoutArtifactId
@@ -272,6 +292,7 @@ async function writePolicyDecisionArtifact({
   stepId: string;
   policyLevel: string;
   reason: string;
+  commandDecisions?: { cmd: string; decision: any }[];
   patchArtifactId?: string | null;
   planArtifactId?: string | null;
   stdoutArtifactId?: string | null;
@@ -280,6 +301,7 @@ async function writePolicyDecisionArtifact({
     version: 1,
     policy_level: policyLevel,
     reason,
+    planned_commands: Array.isArray(commandDecisions) ? commandDecisions : [],
     refs: {
       patch_artifact_id: patchArtifactId ?? null,
       plan_artifact_id: planArtifactId ?? null,
@@ -1379,10 +1401,17 @@ Address all must_fix items.
     }
   }
 
+  // Commands receipt: what would run if we auto-apply.
+  const hasPkg = await fileExists(path.join(ws, 'package.json'));
+  const planned = getPlannedCommandsForRun({ hasPackageJson: hasPkg, autoCommandsEnv: String(process.env.OC_DASH_AUTO_COMMANDS ?? '') });
+  const commandDecisions = planned.cmds.map((cmd) => ({ cmd, decision: policyCheckCommand(cmd) }));
+  const blockedCmds = commandDecisions.filter((x) => !x.decision.ok);
+  const commandsRisk = blockedCmds.length ? `command blocked: ${blockedCmds[0]!.cmd} (${blockedCmds[0]!.decision.reason})` : null;
+
   const execGate = needsApprovalForPolicy(policyLevel as any, {
     kind: 'execute',
     hasPatch: Boolean(patch),
-    riskyReason
+    riskyReason: riskyReason || commandsRisk
   });
 
   if (!execGate.ok && !patch) {
@@ -1394,6 +1423,7 @@ Address all must_fix items.
       stepId,
       policyLevel,
       reason: `${execGate.reason} but no diff produced`,
+      commandDecisions,
       stdoutArtifactId: stdoutId
     });
 
@@ -1487,6 +1517,7 @@ Address all must_fix items.
           stepId,
           policyLevel,
           reason: String(execGate.reason ?? 'approval required'),
+          commandDecisions,
           patchArtifactId
         });
 

@@ -32,6 +32,25 @@ type RunMeta = { run: { id: string; kind: 'execute' | 'plan' | 'review' | 'publi
 
 type Artifact = { id: string; kind: string; name: string; content_text: string };
 
+function renderPlannedCommandsFromPolicyDecision(text: string): { ok: boolean; lines: string[] } {
+  try {
+    const obj = JSON.parse(text);
+    const arr = Array.isArray(obj?.planned_commands) ? obj.planned_commands : [];
+    const lines = arr
+      .map((x: any) => {
+        const cmd = String(x?.cmd ?? '').trim();
+        const ok = Boolean(x?.decision?.ok);
+        const reason = x?.decision?.reason ? String(x.decision.reason) : '';
+        if (!cmd) return null;
+        return ok ? `ALLOW  ${cmd}` : `BLOCK  ${cmd}${reason ? `  — ${reason}` : ''}`;
+      })
+      .filter(Boolean) as string[];
+    return { ok: true, lines };
+  } catch {
+    return { ok: false, lines: [] };
+  }
+}
+
 function parseUnifiedDiffTouchedFiles(diff: string): string[] {
   const files = new Set<string>();
   const lines = String(diff ?? '').split('\n');
@@ -93,6 +112,7 @@ export function AppShell({ title, children }: { title?: string; children: React.
     files: string[];
     riskFlags: string[];
     previewText: string | null;
+    plannedCommandsLines?: string[];
   } | null>(null);
 
   // de-dupe across reconnects
@@ -138,18 +158,32 @@ export function AppShell({ title, children }: { title?: string; children: React.
       const previewText = txt.length > 1600 ? `${txt.slice(0, 1600)}\n…(truncated)…` : txt;
 
       let policyDecisionText: string | null = null;
+      let plannedCommandsLines: string[] = [];
       if (polId) {
         try {
           const pr = await fetch(`${BASE}/api/artifacts/${encodeURIComponent(polId)}`, { cache: 'no-store' });
           const pdata = await j<{ artifact: Artifact }>(pr);
           const ptxt = String(pdata.artifact?.content_text ?? '').trim();
           policyDecisionText = ptxt ? (ptxt.length > 1200 ? `${ptxt.slice(0, 1200)}\n…(truncated)…` : ptxt) : null;
+          if (ptxt) {
+            const parsed = renderPlannedCommandsFromPolicyDecision(ptxt);
+            plannedCommandsLines = parsed.ok ? parsed.lines : [];
+          }
         } catch {
           policyDecisionText = null;
         }
       }
 
-      setApprovalDetails({ files, riskFlags, previewText: policyDecisionText ? `${previewText}\n\n---\nPolicy decision:\n${policyDecisionText}` : previewText });
+      const extra = policyDecisionText
+        ? `${previewText}\n\n---\nPolicy decision:\n${policyDecisionText}`
+        : previewText;
+
+      setApprovalDetails({
+        files,
+        riskFlags,
+        previewText: extra,
+        plannedCommandsLines
+      } as any);
     } catch {
       setApprovalDetails(null);
     }
@@ -632,6 +666,15 @@ export function AppShell({ title, children }: { title?: string; children: React.
                         <li key={x}>{x}</li>
                       ))}
                     </ul>
+                  </div>
+                ) : null}
+
+                {approvalDetails.plannedCommandsLines?.length ? (
+                  <div className="mb-2">
+                    <div className="text-[11px] font-medium text-matrix-200/90">Planned commands</div>
+                    <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words text-[10px] text-zinc-200">
+                      {approvalDetails.plannedCommandsLines.join('\n')}
+                    </pre>
                   </div>
                 ) : null}
 
