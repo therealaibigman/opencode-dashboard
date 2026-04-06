@@ -84,14 +84,68 @@ function PipelineDag({ pipeline, steps, onRetryStep, retryingStepId }: { pipelin
     }
   }
 
+  const waveIndexByNode = new Map<string, number>();
+  for (let wi = 0; wi < waves.length; wi++) for (const nid of waves[wi] ?? []) waveIndexByNode.set(String(nid), wi);
+
+  // Assign a row position within each wave for simple line routing.
+  const rowIndexByNode = new Map<string, number>();
+  for (let wi = 0; wi < waves.length; wi++) {
+    const wave = waves[wi] ?? [];
+    for (let ri = 0; ri < wave.length; ri++) rowIndexByNode.set(String(wave[ri]), ri);
+  }
+
+  const COL_W = 260;
+  const ROW_H = 92;
+  const PAD_X = 18;
+  const PAD_Y = 24;
+
+  const width = Math.max(1, waves.length) * COL_W + PAD_X * 2;
+  const maxRows = Math.max(1, ...waves.map((w) => (w ?? []).length));
+  const height = maxRows * ROW_H + PAD_Y * 2;
+
+  const nodeCenter = (nodeId: string) => {
+    const wi = waveIndexByNode.get(nodeId) ?? 0;
+    const ri = rowIndexByNode.get(nodeId) ?? 0;
+    const x = PAD_X + wi * COL_W + COL_W * 0.92;
+    const y = PAD_Y + ri * ROW_H + ROW_H * 0.45;
+    return { x, y };
+  };
+
   return (
     <div className="space-y-3">
       <div className="text-[11px] text-zinc-500">{nodes.length} nodes • {edges.length} edges</div>
-      <div className="grid gap-3" style={{ gridTemplateColumns: `repeat(${Math.max(1, waves.length)}, minmax(0, 1fr))` }}>
-        {waves.map((wave, wi) => (
-          <div key={wi} className="space-y-2 rounded-xl border border-matrix-500/10 bg-black/15 p-2">
-            <div className="text-[10px] text-zinc-500">wave {wi}</div>
-            {wave.map((nodeId) => {
+
+      <div className="relative overflow-auto rounded-xl border border-matrix-500/10 bg-black/10 p-2">
+        <svg width={width} height={height} className="absolute left-0 top-0">
+          <defs>
+            <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L0,6 L9,3 z" fill="rgba(34,197,94,0.55)" />
+            </marker>
+          </defs>
+          {edges.map(([a, b], idx) => {
+            const A = nodeCenter(String(a));
+            const B = nodeCenter(String(b));
+            // simple bezier
+            const midX = (A.x + B.x) / 2;
+            const d = `M ${A.x} ${A.y} C ${midX} ${A.y}, ${midX} ${B.y}, ${B.x} ${B.y}`;
+            return (
+              <path
+                key={idx}
+                d={d}
+                stroke="rgba(34,197,94,0.35)"
+                strokeWidth={1.2}
+                fill="none"
+                markerEnd="url(#arrow)"
+              />
+            );
+          })}
+        </svg>
+
+        <div className="relative grid gap-3" style={{ width, gridTemplateColumns: `repeat(${Math.max(1, waves.length)}, ${COL_W}px)` }}>
+          {waves.map((wave, wi) => (
+            <div key={wi} className="space-y-2 rounded-xl border border-matrix-500/10 bg-black/15 p-2">
+              <div className="text-[10px] text-zinc-500">wave {wi}</div>
+              {wave.map((nodeId) => {
               const node = nodes.find((n) => String((n as any).id) === nodeId) as any;
               const kind = String(node?.kind ?? nodeId);
               const st = stepByNodeId.get(nodeId) ?? stepByName.get(kind);
@@ -117,9 +171,10 @@ function PipelineDag({ pipeline, steps, onRetryStep, retryingStepId }: { pipelin
                   {st ? <div className="mt-1 text-[10px] text-zinc-600 break-all">step: {st.id}</div> : null}
                 </div>
               );
-            })}
-          </div>
-        ))}
+              })}
+            </div>
+          ))}
+        </div>
       </div>
 
       <details className="rounded-xl border border-matrix-500/10 bg-black/15 p-2">
