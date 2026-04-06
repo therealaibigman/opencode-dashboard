@@ -65,7 +65,7 @@ export async function POST(req: Request) {
     task_id?: string | null;
     thread_id?: string | null;
     model_profile?: string;
-    kind?: 'execute' | 'plan';
+    kind?: 'execute' | 'plan' | 'review';
     parent_run_id?: string | null;
     pipeline_id?: string | null;
   };
