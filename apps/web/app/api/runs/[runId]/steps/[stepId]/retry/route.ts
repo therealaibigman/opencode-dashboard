@@ -29,6 +29,14 @@ export async function POST(
     const runRows = await db.select().from(runs).where(eq(runs.id, rid)).limit(1);
     if (!runRows.length) return NextResponse.json({ error: 'run not found' }, { status: 404 });
 
+    const run = runRows[0] as any;
+    const status = String(run?.status ?? '');
+    const finishedAt = run?.finishedAt ?? null;
+    const isTerminal = status === 'succeeded' || status === 'failed' || status === 'cancelled';
+    if (isTerminal || finishedAt) {
+      return NextResponse.json({ error: `cannot retry step on terminal run status=${status}` }, { status: 409 });
+    }
+
     const stRows = await db
       .select()
       .from(runSteps)
@@ -51,4 +59,3 @@ export async function POST(
     await pool.end();
   }
 }
-
