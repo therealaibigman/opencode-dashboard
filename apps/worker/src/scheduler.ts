@@ -274,7 +274,7 @@ async function reapStuckRuns(db: any) {
       FROM runs
       WHERE status IN ('running','claimed')
         AND (
-          (status = 'claimed' AND heartbeat_at IS NULL AND claimed_at IS NOT NULL AND claimed_at < now() - (${STUCK_CLAIM_MS}::int * interval '1 millisecond'))
+          (status = 'claimed' AND (heartbeat_at IS NULL OR heartbeat_at < claimed_at) AND claimed_at IS NOT NULL AND claimed_at < now() - (${STUCK_CLAIM_MS}::int * interval '1 millisecond'))
           OR
           (heartbeat_at IS NOT NULL AND heartbeat_at < now() - (${STUCK_HEARTBEAT_MS}::int * interval '1 millisecond'))
         )
@@ -326,7 +326,9 @@ async function tick(db: any) {
   if (slots <= 0) return;
 
   // Choose candidate queued runs.
-  // NOTE: This is initial/naive selection; we will refine to handle more kinds, retries, etc.
+  // Refinements:
+  // - fairness: avoid one project starving others (round-robin across projects)
+  // - lease correctness: claim should set a heartbeat baseline so STUCK_CLAIM_MS isn't hit spuriously
   const now = new Date();
 
   const candidates = await db
@@ -349,32 +351,58 @@ async function tick(db: any) {
 
   if (!candidates.length) return;
 
+  // Fairness: round-robin across projects.
+  const buckets = new Map<string, typeof candidates>();
+  for (const c of candidates) {
+    const pid = String(c.projectId);
+    const arr = buckets.get(pid) ?? [];
+    arr.push(c);
+    buckets.set(pid, arr);
+  }
+
+  const pids = Array.from(buckets.keys()).sort();
+  const fairOrder: typeof candidates = [];
+  for (let i = 0; i < candidates.length; i++) {
+    let pushed = false;
+    for (const pid of pids) {
+      const arr = buckets.get(pid) ?? [];
+      if (arr.length) {
+        fairOrder.push(arr.shift()!);
+        pushed = true;
+        if (fairOrder.length >= candidates.length) break;
+      }
+    }
+    if (!pushed) break;
+  }
+
   // Simple per-project mutation lock: only allow one execute/plan at a time.
   // (Plan is treated as "mutation" here for simplicity; can be relaxed later.)
   const claimed: string[] = [];
-  for (const c of candidates) {
+  for (const c of fairOrder) {
     if (claimed.length >= slots) break;
 
-    const isMutation = c.kind === 'execute' || c.kind === 'plan';
+    const isMutation = c.kind === 'execute' || c.kind === 'plan' || c.kind === 'publish';
     if (isMutation) {
       const perProjRows = await db.execute(sql`
         SELECT count(*)::int AS n
         FROM runs
         WHERE project_id = ${c.projectId}
           AND status IN ('running', 'claimed')
-          AND kind IN ('execute','plan')
+          AND kind IN ('execute','plan','publish')
       `);
       const perProj = Number((perProjRows as any)?.rows?.[0]?.n ?? (perProjRows as any)?.[0]?.n ?? 0);
       if (perProj >= MAX_ACTIVE_MUTATION_RUNS_PER_PROJECT) continue;
     }
 
     // Claim atomically.
+    // NOTE: We set heartbeat_at immediately so STUCK_CLAIM_MS doesn't bite if a worker takes time to start.
     const updated = await db
       .update(runs)
       .set({
         status: 'claimed' as any,
         claimedBy: SCHEDULER_ID,
         claimedAt: new Date(),
+        heartbeatAt: new Date(),
         // clear worker assignment; executor will set workerId
         workerId: null
       })
