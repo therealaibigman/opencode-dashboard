@@ -13,6 +13,7 @@ const SCHEDULER_ID = String(process.env.OC_DASH_SCHEDULER_ID ?? '').trim() || `s
 // Hard limits (initial defaults)
 const MAX_ACTIVE_RUNS_GLOBAL = Number(process.env.OC_DASH_MAX_ACTIVE_RUNS_GLOBAL ?? '3');
 const MAX_ACTIVE_MUTATION_RUNS_PER_PROJECT = Number(process.env.OC_DASH_MAX_ACTIVE_MUTATION_RUNS_PER_PROJECT ?? '1');
+const MAX_ACTIVE_READONLY_RUNS_PER_PROJECT = Number(process.env.OC_DASH_MAX_ACTIVE_READONLY_RUNS_PER_PROJECT ?? '4');
 
 const TICK_MS = Number(process.env.OC_DASH_SCHEDULER_TICK_MS ?? '750');
 
@@ -351,7 +352,8 @@ async function tick(db: any) {
 
   if (!candidates.length) return;
 
-  // Fairness: round-robin across projects.
+  // Fairness: round-robin across projects, with lanes.
+  // Lanes prevent long mutation runs from starving short read-only work (plan/review).
   const buckets = new Map<string, typeof candidates>();
   for (const c of candidates) {
     const pid = String(c.projectId);
@@ -361,19 +363,45 @@ async function tick(db: any) {
   }
 
   const pids = Array.from(buckets.keys()).sort();
-  const fairOrder: typeof candidates = [];
+
+  const isMutationKind = (k: any) => k === 'execute' || k === 'publish';
+  const isReadonlyKind = (k: any) => k === 'plan' || k === 'review';
+
+  // Build two fair orders: readonly first, then mutation.
+  // We still respect global slots, but this improves perceived responsiveness.
+  const fairOrderReadonly: typeof candidates = [];
+  const fairOrderMutation: typeof candidates = [];
+
   for (let i = 0; i < candidates.length; i++) {
     let pushed = false;
     for (const pid of pids) {
       const arr = buckets.get(pid) ?? [];
-      if (arr.length) {
-        fairOrder.push(arr.shift()!);
+      if (!arr.length) continue;
+
+      // Prefer pulling readonly items into the readonly lane first.
+      const idx = arr.findIndex((x: any) => isReadonlyKind((x as any).kind));
+      if (idx !== -1) {
+        fairOrderReadonly.push(arr.splice(idx, 1)[0]!);
         pushed = true;
-        if (fairOrder.length >= candidates.length) break;
+        continue;
       }
+
+      // Otherwise pull a mutation job into the mutation lane.
+      const idx2 = arr.findIndex((x: any) => isMutationKind((x as any).kind) || (x as any).kind === 'plan');
+      if (idx2 !== -1) {
+        fairOrderMutation.push(arr.splice(idx2, 1)[0]!);
+        pushed = true;
+        continue;
+      }
+
+      // Fallback: take whatever is next.
+      fairOrderMutation.push(arr.shift()!);
+      pushed = true;
     }
     if (!pushed) break;
   }
+
+  const fairOrder: typeof candidates = [...fairOrderReadonly, ...fairOrderMutation];
 
   // Simple per-project mutation lock: only allow one execute/plan at a time.
   // (Plan is treated as "mutation" here for simplicity; can be relaxed later.)
@@ -392,6 +420,17 @@ async function tick(db: any) {
       `);
       const perProj = Number((perProjRows as any)?.rows?.[0]?.n ?? (perProjRows as any)?.[0]?.n ?? 0);
       if (perProj >= MAX_ACTIVE_MUTATION_RUNS_PER_PROJECT) continue;
+    } else {
+      // Read-only lane (plan/review): allow more parallelism per project.
+      const perProjRows = await db.execute(sql`
+        SELECT count(*)::int AS n
+        FROM runs
+        WHERE project_id = ${c.projectId}
+          AND status IN ('running', 'claimed')
+          AND kind IN ('plan','review')
+      `);
+      const perProj = Number((perProjRows as any)?.rows?.[0]?.n ?? (perProjRows as any)?.[0]?.n ?? 0);
+      if (perProj >= MAX_ACTIVE_READONLY_RUNS_PER_PROJECT) continue;
     }
 
     // Claim atomically.
