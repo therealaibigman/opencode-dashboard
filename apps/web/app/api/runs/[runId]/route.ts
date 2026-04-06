@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { makeDb } from '@ocdash/db/client';
-import { runs } from '@ocdash/db/schema';
+import { pipelines, runs } from '@ocdash/db/schema';
 
 export const runtime = 'nodejs';
 
@@ -17,7 +17,15 @@ export async function GET(
   try {
     const rows = await db.select().from(runs).where(eq(runs.id, runId)).limit(1);
     if (!rows.length) return NextResponse.json({ error: 'not found' }, { status: 404 });
-    return NextResponse.json({ run: rows[0] });
+
+    const run = rows[0] as any;
+    let pipeline: any = null;
+    if (run?.pipelineId) {
+      const prows = await db.select().from(pipelines).where(eq(pipelines.id, run.pipelineId)).limit(1);
+      if (prows.length) pipeline = prows[0];
+    }
+
+    return NextResponse.json({ run, pipeline });
   } finally {
     await pool.end();
   }

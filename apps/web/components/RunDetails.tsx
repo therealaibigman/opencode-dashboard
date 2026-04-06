@@ -25,6 +25,8 @@ type RunRow = {
   createdAt: string;
 };
 
+type PipelineRow = { id: string; name: string; version: string; graphJson?: any; graph_json?: any };
+
 type ArtifactStub = {
   id: string;
   project_id: string;
@@ -190,6 +192,7 @@ export function RunDetails({ runId }: { runId: string }) {
   );
 
   const [run, setRun] = useState<RunRow | null>(null);
+  const [pipeline, setPipeline] = useState<PipelineRow | null>(null);
   const [artifacts, setArtifacts] = useState<ArtifactStub[]>([]);
   const [openArtifact, setOpenArtifact] = useState<ArtifactFull | null>(null);
   const [steps, setSteps] = useState<StepRow[]>([]);
@@ -211,8 +214,9 @@ export function RunDetails({ runId }: { runId: string }) {
   const stopRef = useRef(false);
 
   async function refreshRun() {
-    const r = await j<{ run: RunRow }>(await fetch(api.run, { cache: 'no-store' }));
+    const r = await j<{ run: RunRow; pipeline?: PipelineRow | null }>(await fetch(api.run, { cache: 'no-store' }));
     setRun(r.run);
+    setPipeline((r as any).pipeline ?? null);
     await refreshThreadAndMessages(r.run);
   }
 
@@ -680,6 +684,26 @@ export function RunDetails({ runId }: { runId: string }) {
             </div>
           ) : null}
         </div>
+
+        {pipeline ? (
+          <div className="rounded-xl border border-matrix-500/20 bg-black/20 p-3 md:col-span-2">
+            <div className="mb-2 text-xs font-medium text-matrix-200/90">Pipeline DAG</div>
+            <div className="text-xs text-zinc-200">
+              <span className="text-zinc-400">pipeline:</span> {pipeline.name} <span className="text-zinc-500">({pipeline.version})</span>
+            </div>
+            <div className="mt-2">
+              <details className="rounded-xl border border-matrix-500/10 bg-black/15 p-3">
+                <summary className="cursor-pointer select-none text-[11px] text-zinc-200">graph</summary>
+                <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-words text-[10px] text-zinc-200">
+                  {JSON.stringify((pipeline as any).graphJson ?? (pipeline as any).graph_json ?? {}, null, 2)}
+                </pre>
+              </details>
+            </div>
+            <div className="mt-3 text-[11px] text-zinc-500">
+              (DAG visual view is next — this is the raw graph for now.)
+            </div>
+          </div>
+        ) : null}
 
         <div className="rounded-xl border border-matrix-500/20 bg-black/20 p-3 md:col-span-2">
           <div className="mb-2 text-xs font-medium text-matrix-200/90">Artifacts</div>
