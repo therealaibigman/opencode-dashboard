@@ -16,6 +16,7 @@ type RunRow = {
   kind: 'execute' | 'plan' | 'review' | 'publish';
   parentRunId: string | null;
   threadId: string | null;
+  pipelineId?: string | null;
   prUrl: string | null;
   prBranch: string | null;
   prState: string | null;
@@ -203,6 +204,7 @@ export function RunDetails({ runId }: { runId: string }) {
   const [rejecting, setRejecting] = useState(false);
   const [prError, setPrError] = useState<string | null>(null);
   const [queueingExecute, setQueueingExecute] = useState(false);
+  const [rerunning, setRerunning] = useState(false);
 
   const stopRef = useRef(false);
 
@@ -334,6 +336,53 @@ export function RunDetails({ runId }: { runId: string }) {
       setErr(String(e?.message ?? e));
     } finally {
       setQueueingExecute(false);
+    }
+  }
+
+  async function rerunSameInputs() {
+    if (!run) return;
+
+    const ok = window.confirm(`Re-run with the same inputs?\n\nThis will queue a new run with the same kind/model/task/pipeline links.`);
+    if (!ok) return;
+
+    setErr(null);
+    setRerunning(true);
+    try {
+      // Prefer the run_manifest artifact (more future-proof), but fall back to the run row.
+      let manifest: any = null;
+      try {
+        const stubs = await j<{ artifacts: ArtifactStub[] }>(await fetch(api.artifacts, { cache: 'no-store' }));
+        const man = (stubs.artifacts ?? []).find((a) => a.kind === 'run_manifest');
+        if (man?.id) {
+          const full = await j<{ artifact: ArtifactFull }>(await fetch(api.artifact(man.id), { cache: 'no-store' }));
+          const txt = String(full.artifact?.content_text ?? '').trim();
+          if (txt) manifest = JSON.parse(txt);
+        }
+      } catch {
+        // ignore (we can still rerun from the run row)
+      }
+
+      const payload = {
+        project_id: String(manifest?.project_id ?? run.projectId),
+        task_id: (manifest?.task_id ?? run.taskId) ?? null,
+        model_profile: String(manifest?.model_profile ?? run.modelProfile),
+        kind: String(manifest?.kind ?? run.kind),
+        parent_run_id: (manifest?.parent_run_id ?? run.parentRunId) ?? null,
+        pipeline_id: (manifest?.pipeline_id ?? run.pipelineId) ?? null
+      };
+
+      const res = await fetch(api.runs, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      const data = await j<{ run: { id: string } }>(res);
+      window.location.href = `${BASE}/runs/${encodeURIComponent(data.run.id)}`;
+    } catch (e: any) {
+      setErr(String(e?.message ?? e));
+    } finally {
+      setRerunning(false);
     }
   }
 
@@ -490,6 +539,15 @@ export function RunDetails({ runId }: { runId: string }) {
             className="rounded-lg bg-black/25 px-3 py-2 text-sm text-zinc-200 ring-1 ring-matrix-500/20 hover:bg-black/35"
           >
             Refresh
+          </button>
+
+          <button
+            onClick={() => void rerunSameInputs()}
+            disabled={!run || cancelling || approving || rejecting || rerunning}
+            className="rounded-lg bg-matrix-500/15 px-3 py-2 text-sm text-matrix-100 ring-1 ring-matrix-500/30 hover:bg-matrix-500/20 disabled:opacity-60"
+            title="Queue a new run using the same recorded inputs (via run_manifest if present)."
+          >
+            {rerunning ? 'Queueing…' : 'Re-run (same inputs)'}
           </button>
 
           <button
