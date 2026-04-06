@@ -28,6 +28,41 @@ const WORKSPACES_ROOT =
 const REQUIRE_APPROVAL = String(process.env.OC_DASH_REQUIRE_APPROVAL ?? '') === '1';
 const WORKER_ID = String(process.env.OC_DASH_WORKER_ID ?? '').trim() || `worker@${process.pid}`;
 
+type PolicyLevel = 'strict' | 'normal' | 'yolo';
+
+async function getProjectPolicyLevel(db: any, projectId: string): Promise<PolicyLevel> {
+  try {
+    const rows = await db.select({ policyLevel: (projects as any).policyLevel }).from(projects).where(eq(projects.id, projectId)).limit(1);
+    const v = String((rows?.[0] as any)?.policyLevel ?? 'normal');
+    if (v === 'strict' || v === 'normal' || v === 'yolo') return v;
+    return 'normal';
+  } catch {
+    return 'normal';
+  }
+}
+
+function needsApprovalForPolicy(level: PolicyLevel, opts: { kind: string; hasPatch: boolean; riskyReason?: string | null }) {
+  // strict: always gate plan + any mutation (execute/publish) regardless of env flag
+  if (level === 'strict') {
+    if (opts.kind === 'plan') return { ok: false as const, reason: 'project policy=strict' };
+    if (opts.kind === 'execute' || opts.kind === 'publish') return { ok: false as const, reason: 'project policy=strict' };
+  }
+
+  // normal: gate when env requires it, or when worker detects a risky reason.
+  if (level === 'normal') {
+    if (opts.kind === 'plan') return { ok: true as const };
+    if (opts.riskyReason) return { ok: false as const, reason: opts.riskyReason };
+    if (REQUIRE_APPROVAL) return { ok: false as const, reason: 'OC_DASH_REQUIRE_APPROVAL=1' };
+  }
+
+  // yolo: only gate on hard policy blocks (these become riskyReason).
+  if (level === 'yolo') {
+    if (opts.riskyReason) return { ok: false as const, reason: opts.riskyReason };
+  }
+
+  return { ok: true as const };
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -748,6 +783,8 @@ async function processRun(db: any, runId: string) {
 
   if (!projectId) throw new Error(`Run ${runId} missing projectId`);
 
+  const policyLevel = await getProjectPolicyLevel(db, projectId);
+
   if (runRow?.status === 'cancelled') return;
 
   if (kind === 'review') {
@@ -1204,25 +1241,43 @@ Address all must_fix items.
         payload: { artifact: { id: planArtifactId, kind: 'plan', name: 'proposed plan' } }
       });
 
-      await db.update(runs).set({ status: 'needs_approval' }).where(eq(runs.id, runId));
-      await appendEventRow(db, {
-        id: newId('evt'),
-        ts: nowIso(),
-        seq: seq++,
-        type: 'approval.requested',
-        source: 'worker',
-        severity: 'warn',
-        project_id: projectId,
-        task_id: taskId ?? undefined,
-        run_id: runId,
-        payload: { reason: v && !v.ok ? `plan approval required (invalid format: ${v.error})` : 'plan approval required', plan_artifact_id: planArtifactId }
+      // Policy gate for plans: strict always gates; normal gates invalid plans; yolo allows unless invalid.
+      const planRisk = v && !v.ok ? `invalid plan format: ${v.error}` : null;
+      const gate = needsApprovalForPolicy(policyLevel as any, {
+        kind: 'plan',
+        hasPatch: false,
+        riskyReason: planRisk
       });
+
+      if (!gate.ok) {
+        await db.update(runs).set({ status: 'needs_approval' }).where(eq(runs.id, runId));
+        await appendEventRow(db, {
+          id: newId('evt'),
+          ts: nowIso(),
+          seq: seq++,
+          type: 'approval.requested',
+          source: 'worker',
+          severity: 'warn',
+          project_id: projectId,
+          task_id: taskId ?? undefined,
+          run_id: runId,
+          payload: {
+            reason: gate.reason || 'plan approval required',
+            plan_artifact_id: planArtifactId,
+            policy_level: policyLevel
+          }
+        });
 
         if (kind === 'execute') {
           await maybeUpdateTaskStatus({ db, projectId, taskId, runId, nextStatus: 'review' });
         }
 
         await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: 'Approval required. Approve or reject in the dashboard to continue.' });
+        return;
+      }
+
+      await db.update(runs).set({ status: 'succeeded', finishedAt: new Date() } as any).where(eq(runs.id, runId));
+      await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: 'Plan produced (not gated by policy). Queue an execute run when ready.' });
       return;
     }
 
@@ -1249,7 +1304,27 @@ Address all must_fix items.
   // execute kind (existing approval gate)
   const patch = extractUnifiedDiffFromText(result.stdout ?? '');
 
-  if (REQUIRE_APPROVAL && !patch) {
+  // Compute risk signals for policy gating.
+  // Hard policy blocks become "riskyReason" (must gate even in yolo).
+  let riskyReason: string | null = null;
+  if (patch) {
+    const touchedPaths = patch.touchedPaths.length ? patch.touchedPaths : ['README.md'];
+    for (const p of touchedPaths) {
+      const dec = policyCheckPath({ workspace: ws, filePath: p });
+      if (!dec.ok) {
+        riskyReason = dec.reason;
+        break;
+      }
+    }
+  }
+
+  const execGate = needsApprovalForPolicy(policyLevel as any, {
+    kind: 'execute',
+    hasPatch: Boolean(patch),
+    riskyReason
+  });
+
+  if (!execGate.ok && !patch) {
     await db.update(runs).set({ status: 'needs_approval' }).where(eq(runs.id, runId));
     await appendEventRow(db, {
       id: newId('evt'),
@@ -1261,7 +1336,11 @@ Address all must_fix items.
       project_id: projectId,
       task_id: taskId ?? undefined,
       run_id: runId,
-      payload: { reason: 'OC_DASH_REQUIRE_APPROVAL=1 but no diff produced', stdout_artifact_id: stdoutId }
+      payload: {
+        reason: `${execGate.reason} but no diff produced`,
+        stdout_artifact_id: stdoutId,
+        policy_level: policyLevel
+      }
     });
 
         if (kind === 'execute') {
@@ -1326,7 +1405,7 @@ Address all must_fix items.
         payload: { artifact: { id: patchArtifactId, kind: 'patch', name: 'proposed patch' } }
       });
 
-      if (REQUIRE_APPROVAL) {
+      if (!execGate.ok) {
         await db.update(runs).set({ status: 'needs_approval' }).where(eq(runs.id, runId));
         await appendEventRow(db, {
           id: newId('evt'),
@@ -1338,7 +1417,7 @@ Address all must_fix items.
           project_id: projectId,
           task_id: taskId ?? undefined,
           run_id: runId,
-          payload: { reason: 'OC_DASH_REQUIRE_APPROVAL=1', patch_artifact_id: patchArtifactId }
+          payload: { reason: execGate.reason, patch_artifact_id: patchArtifactId, policy_level: policyLevel }
         });
 
         if (kind === 'execute') {
@@ -1349,36 +1428,7 @@ Address all must_fix items.
         return;
       }
 
-      const touchedPaths = patch.touchedPaths.length ? patch.touchedPaths : ['README.md'];
-      for (const p of touchedPaths) {
-        const dec = policyCheckPath({ workspace: ws, filePath: p });
-        if (!dec.ok) {
-          await db.update(runs).set({ status: 'needs_approval' }).where(eq(runs.id, runId));
-
-          await appendEventRow(db, {
-            id: newId('evt'),
-            ts: nowIso(),
-            seq: seq++,
-            type: 'approval.requested',
-            source: 'worker',
-            severity: 'warn',
-            project_id: projectId,
-            task_id: taskId ?? undefined,
-            run_id: runId,
-            payload: { reason: dec.reason, patch_artifact_id: patchArtifactId }
-          });
-
-        if (kind === 'execute') {
-          await maybeUpdateTaskStatus({ db, projectId, taskId, runId, nextStatus: 'review' });
-        }
-
-        await appendThreadMessage({ db, projectId, taskId, threadId, role: 'assistant', content: 'Approval required. Approve or reject in the dashboard to continue.' });
-
-          return;
-        }
-
-
-      }
+      // Note: path policy gating moved to execGate above (riskyReason). Keep this block empty for clarity.
 
       // Pipeline DAG execution (v2): dependency-driven scheduler with safe parallel waves.
       if (pipelineId && pipelineGraph) {
