@@ -41,6 +41,7 @@ export function AppShell({ title, children }: { title?: string; children: React.
   const [defaultBranch, setDefaultBranch] = useState('main');
   const [planModel, setPlanModel] = useState('');
   const [executeModel, setExecuteModel] = useState('');
+  const [policyLevel, setPolicyLevel] = useState<'strict' | 'normal' | 'yolo'>('normal');
   const [savingSource, setSavingSource] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [syncNote, setSyncNote] = useState<string | null>(null);
@@ -80,6 +81,7 @@ export function AppShell({ title, children }: { title?: string; children: React.
     setDefaultBranch(String(selected?.defaultBranch ?? 'main'));
     setPlanModel(String(selected?.planModel ?? ''));
     setExecuteModel(String(selected?.executeModel ?? ''));
+    setPolicyLevel((['strict', 'normal', 'yolo'].includes(String(selected?.policyLevel)) ? String(selected?.policyLevel) : 'normal') as any);
     setSyncNote(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedProjectId, projects.length]);
@@ -99,7 +101,8 @@ export function AppShell({ title, children }: { title?: string; children: React.
             repo_url: repoUrl.trim() || null,
             default_branch: defaultBranch.trim() || null,
             plan_model: planModel.trim() || null,
-            execute_model: executeModel.trim() || null
+            execute_model: executeModel.trim() || null,
+            policy_level: policyLevel
           })
         })
       );
@@ -387,6 +390,22 @@ export function AppShell({ title, children }: { title?: string; children: React.
               placeholder="execute model (optional)"
               className="w-full rounded-lg border border-matrix-500/20 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:ring-1 focus:ring-matrix-500/40"
             />
+
+            <div>
+              <div className="mb-1 text-[11px] text-zinc-400">Policy level</div>
+              <select
+                value={policyLevel}
+                onChange={(e) => setPolicyLevel(e.target.value as any)}
+                className="w-full rounded-lg border border-matrix-500/20 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:ring-1 focus:ring-matrix-500/40"
+              >
+                <option value="strict">strict (always approve mutations)</option>
+                <option value="normal">normal (gate risky ops)</option>
+                <option value="yolo">yolo (auto-apply allowed)</option>
+              </select>
+              <div className="mt-1 text-[10px] text-zinc-500">
+                This is enforced server-side. UI settings don’t override it.
+              </div>
+            </div>
             <div className="grid grid-cols-2 gap-2">
               <button
                 onClick={saveProjectSource}

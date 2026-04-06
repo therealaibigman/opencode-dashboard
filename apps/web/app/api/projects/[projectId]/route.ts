@@ -20,6 +20,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ projec
     default_branch?: string | null;
     plan_model?: string | null;
     execute_model?: string | null;
+    policy_level?: 'strict' | 'normal' | 'yolo' | null;
   };
 
   const { db, pool } = makeDb(url);
@@ -31,8 +32,14 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ projec
     if ('default_branch' in body)
       updates.defaultBranch = (body.default_branch ?? null) && String(body.default_branch).trim();
 
+    if ('policy_level' in body) {
+      const v = body.policy_level;
+      if (v === null) updates.policyLevel = 'normal';
+      else if (v === 'strict' || v === 'normal' || v === 'yolo') updates.policyLevel = v;
+    }
+
     // normalize empty strings to null
-    for (const k of ['localPath', 'repoUrl', 'defaultBranch', 'planModel', 'executeModel']) {
+    for (const k of ['localPath', 'repoUrl', 'defaultBranch', 'planModel', 'executeModel', 'policyLevel']) {
       if (updates[k] === '') updates[k] = null;
     }
 

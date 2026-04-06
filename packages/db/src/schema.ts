@@ -36,6 +36,12 @@ export const projects = pgTable('projects', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),
 
+  // Safety policy controls (server-enforced)
+  // strict: always require approval for mutations
+  // normal: allow safe automation, gate risky operations
+  // yolo: permit auto-apply/publish (still logged)
+  policyLevel: text('policy_level').notNull().default('normal'),
+
   // Phase 4: real project sources
   localPath: text('local_path'),
   repoUrl: text('repo_url'),
