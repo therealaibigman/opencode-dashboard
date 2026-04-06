@@ -40,9 +40,14 @@ function PipelineDag({ pipeline, steps }: { pipeline: PipelineRow; steps: StepRo
   const nodes: Array<{ id: string; kind?: string }> = Array.isArray((graph as any)?.nodes) ? (graph as any).nodes : [];
   const edges: Array<[string, string]> = Array.isArray((graph as any)?.edges) ? (graph as any).edges : [];
 
-  // Map node kind -> step row (best-effort). Pipeline pre-creates run_steps with name=kind.
+  // Map by pipeline_node_id when available (best), fall back to kind/name.
+  const stepByNodeId = new Map<string, StepRow>();
   const stepByName = new Map<string, StepRow>();
-  for (const st of steps) stepByName.set(String(st.name), st);
+  for (const st of steps as any[]) {
+    stepByName.set(String(st.name), st as any);
+    const nodeId = String((st as any)?.inputJson?.pipeline_node_id ?? (st as any)?.input_json?.pipeline_node_id ?? '').trim();
+    if (nodeId) stepByNodeId.set(nodeId, st as any);
+  }
 
   // Simple topological "waves" layout.
   const deps = new Map<string, Set<string>>();
@@ -89,7 +94,7 @@ function PipelineDag({ pipeline, steps }: { pipeline: PipelineRow; steps: StepRo
             {wave.map((nodeId) => {
               const node = nodes.find((n) => String((n as any).id) === nodeId) as any;
               const kind = String(node?.kind ?? nodeId);
-              const st = stepByName.get(kind);
+              const st = stepByNodeId.get(nodeId) ?? stepByName.get(kind);
               const status = st?.status ?? 'queued';
               return (
                 <div key={nodeId} className="rounded-lg border border-matrix-500/10 bg-black/20 p-2">
@@ -128,7 +133,17 @@ type ArtifactStub = {
 
 type ArtifactFull = ArtifactStub & { content_text: string };
 
-type StepRow = { id: string; name: string; status: string; model: string | null; startedAt: string | null; finishedAt: string | null; createdAt: string };
+type StepRow = {
+  id: string;
+  name: string;
+  status: string;
+  model: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  createdAt: string;
+  inputJson?: any;
+  input_json?: any;
+};
 
 type ThreadRow = { id: string; title: string; taskId: string | null; createdAt: string; updatedAt: string };
 type MessageRow = { id: string; role: string; contentMd: string; createdAt: string };
