@@ -32,6 +32,52 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+async function safeExec(cmd: string, opts: { cwd: string; timeoutMs?: number }) {
+  const { cwd, timeoutMs = 5000 } = opts;
+  return await new Promise<{ ok: boolean; stdout: string; stderr: string }>((resolve) => {
+    try {
+      const child = spawn(cmd, { cwd, shell: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      let stdout = '';
+      let stderr = '';
+      const t = setTimeout(() => {
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          // ignore
+        }
+      }, timeoutMs);
+      child.stdout?.on('data', (d) => (stdout += String(d)));
+      child.stderr?.on('data', (d) => (stderr += String(d)));
+      child.on('close', (code) => {
+        clearTimeout(t);
+        resolve({ ok: code === 0, stdout: stdout.trim(), stderr: stderr.trim() });
+      });
+    } catch (e: any) {
+      resolve({ ok: false, stdout: '', stderr: String(e?.message ?? e) });
+    }
+  });
+}
+
+async function getGitSnapshot(cwd: string): Promise<
+  | { is_git: true; sha: string | null; branch: string | null; dirty: boolean | null }
+  | { is_git: false }
+> {
+  // If this isn't a git repo, don't fail the run.
+  const inside = await safeExec('git rev-parse --is-inside-work-tree', { cwd });
+  if (!inside.ok || inside.stdout !== 'true') return { is_git: false };
+
+  const sha = await safeExec('git rev-parse HEAD', { cwd });
+  const branch = await safeExec('git rev-parse --abbrev-ref HEAD', { cwd });
+  const dirty = await safeExec('git status --porcelain', { cwd });
+
+  return {
+    is_git: true,
+    sha: sha.ok ? sha.stdout : null,
+    branch: branch.ok ? branch.stdout : null,
+    dirty: dirty.ok ? dirty.stdout.length > 0 : null
+  };
+}
+
 async function appendEventRow(db: any, ev: OcdashEvent) {
   await db.insert(events).values({
     id: ev.id,
@@ -355,6 +401,75 @@ async function ensureReadme(ws: string) {
   }
 }
 
+async function ensureRunManifest({
+  db,
+  runRow,
+  workspace
+}: {
+  db: any;
+  runRow: any;
+  workspace: string;
+}) {
+  const projectId = runRow?.projectId as string | undefined;
+  const runId = runRow?.id as string | undefined;
+  if (!projectId || !runId) return;
+
+  // Only write once.
+  const existing = await db
+    .select({ id: artifacts.id })
+    .from(artifacts)
+    .where(and(eq(artifacts.runId, runId), eq(artifacts.kind, 'run_manifest' as any)))
+    .limit(1);
+  if (existing.length) return;
+
+  const git = await getGitSnapshot(workspace);
+
+  const manifest = {
+    version: 1,
+    run_id: runId,
+    project_id: projectId,
+    task_id: (runRow?.taskId as string | null | undefined) ?? null,
+    thread_id: (runRow?.threadId as string | null | undefined) ?? null,
+    kind: String(runRow?.kind ?? 'execute'),
+    model_profile: String(runRow?.modelProfile ?? 'balanced'),
+    parent_run_id: (runRow?.parentRunId as string | null | undefined) ?? null,
+    pipeline_id: (runRow?.pipelineId as string | null | undefined) ?? null,
+    created_at: runRow?.createdAt ? new Date(runRow.createdAt).toISOString() : nowIso(),
+    workspace,
+    git,
+    env: {
+      require_approval: String(process.env.OC_DASH_REQUIRE_APPROVAL ?? ''),
+      auto_commands: String(process.env.OC_DASH_AUTO_COMMANDS ?? ''),
+      opencode_model: String(process.env.OPENCODE_MODEL ?? ''),
+      opencode_timeout_ms: String(process.env.OPENCODE_TIMEOUT_MS ?? '')
+    }
+  };
+
+  const artId = await writeArtifact({
+    db,
+    projectId,
+    runId,
+    stepId: 'stp_manifest',
+    kind: 'run_manifest',
+    name: 'run manifest',
+    content: JSON.stringify(manifest, null, 2)
+  });
+
+  await appendEventRow(db, {
+    id: newId('evt'),
+    ts: nowIso(),
+    seq: 0,
+    type: 'artifact.created',
+    source: 'worker',
+    severity: 'info',
+    project_id: projectId,
+    task_id: manifest.task_id ?? undefined,
+    run_id: runId,
+    step_id: 'stp_manifest',
+    payload: { artifact: { id: artId, kind: 'run_manifest', name: 'run manifest' } }
+  });
+}
+
 
 
 async function processPublishRun({ db, runId, runRow }: { db: any; runId: string; runRow: any }) {
@@ -398,6 +513,9 @@ async function processPublishRun({ db, runId, runRow }: { db: any; runId: string
       }
     });
     const ws = prep.workspace;
+
+    // Receipt: capture a reproducible run manifest (git sha/branch, key env knobs, etc.)
+    await ensureRunManifest({ db, runRow, workspace: ws });
 
     await ensureGitRepo(ws);
 
@@ -557,6 +675,12 @@ ${clipped}
     }
   });
   const ws = prep.workspace;
+
+  // Receipt: capture a reproducible run manifest (git sha/branch, key env knobs, etc.)
+  await ensureRunManifest({ db, runRow, workspace: ws });
+
+  // Receipt: capture a reproducible run manifest (git sha/branch, key env knobs, etc.)
+  await ensureRunManifest({ db, runRow, workspace: ws });
 
   const result = await opencodeRun({
     cwd: ws,
