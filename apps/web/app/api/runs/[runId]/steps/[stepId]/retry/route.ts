@@ -3,6 +3,7 @@ import { and, eq } from 'drizzle-orm';
 
 import { makeDb } from '@ocdash/db/client';
 import { pipelines, runSteps, runs } from '@ocdash/db/schema';
+import { appendProjectEvent } from '@/app/api/_lib/eventlog';
 
 export const runtime = 'nodejs';
 
@@ -104,6 +105,24 @@ export async function POST(
           outputJson: {}
         } as any)
         .where(eq(runSteps.id, id));
+    }
+
+    // Timeline/audit event (UI can use this to show a toast).
+    try {
+      await appendProjectEvent({
+        databaseUrl: url,
+        projectId: run.projectId,
+        taskId: run.taskId ?? null,
+        runId: rid,
+        type: 'run.step.retried',
+        payload: {
+          step_id: sid,
+          reset_step_ids: resetIds,
+          reset_count: resetIds.length
+        }
+      });
+    } catch {
+      // Best-effort: retry should still succeed even if event log append fails.
     }
 
     return NextResponse.json({ ok: true, run_id: rid, step_id: sid, reset_step_ids: resetIds }, { status: 200 });

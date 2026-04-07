@@ -25,6 +25,7 @@ export type EventType =
   | 'run.step.progress'
   | 'run.step.completed'
   | 'run.step.failed'
+  | 'run.step.retried'
 
   // tools
   | 'tool.call.requested'

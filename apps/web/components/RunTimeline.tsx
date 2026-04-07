@@ -121,6 +121,7 @@ const RUN_EVENT_TYPES = [
   'run.step.progress',
   'run.step.completed',
   'run.step.failed',
+  'run.step.retried',
   'tool.call.requested',
   'tool.call.completed',
   'tool.call.failed',

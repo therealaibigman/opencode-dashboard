@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { validatePlanJson } from '@ocdash/shared';
+import { toast } from 'sonner';
 import { useBasePath } from './useBasePath';
 import { useSettings } from './useSettings';
 import { RunTimeline } from './RunTimeline';
@@ -420,10 +421,21 @@ export function RunDetails({ runId }: { runId: string }) {
     setErr(null);
     setRetryingStepId(stepId);
     try {
-      await j(await fetch(api.retryStep(stepId), { method: 'POST' }));
+      const data = await j<{ ok: boolean; run_id: string; step_id: string; reset_step_ids?: string[] }>(
+        await fetch(api.retryStep(stepId), { method: 'POST' })
+      );
+
+      const resetCount = Array.isArray(data.reset_step_ids) ? data.reset_step_ids.length : 1;
+      const downstream = Math.max(0, resetCount - 1);
+      toast.success('Retry queued', {
+        description: downstream
+          ? `Reset ${downstream} downstream step${downstream === 1 ? '' : 's'}.`
+          : 'Step reset to queued.'
+      });
       await refreshSteps();
     } catch (e: any) {
       setErr(String(e?.message ?? e));
+      toast.error('Retry failed', { description: String(e?.message ?? e) });
     } finally {
       setRetryingStepId(null);
     }

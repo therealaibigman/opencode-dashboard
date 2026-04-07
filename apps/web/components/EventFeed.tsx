@@ -64,7 +64,8 @@ export function EventFeed({ max = 400, className = '' }: { max?: number; classNa
       'run.step.started',
       'run.step.progress',
       'run.step.completed',
-      'run.step.failed'
+      'run.step.failed',
+      'run.step.retried'
     ];
     for (const t of known) es.addEventListener(t, onAny);
 
