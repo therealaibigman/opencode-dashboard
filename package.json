@@ -13,6 +13,10 @@
     "check:migrations": "node scripts/check_migrations.js",
     "worker": "npm -w @ocdash/worker run dev",
     "db:generate": "npm -w @ocdash/db run generate",
-    "db:migrate": "npm -w @ocdash/db run migrate"
+    "db:migrate": "npm -w @ocdash/db run migrate",
+    "test": "npm -ws --if-present run test"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.9"
   }
 }
