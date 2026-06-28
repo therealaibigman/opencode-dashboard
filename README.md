@@ -11,7 +11,7 @@ This is not a chatbot toy. It’s an orchestration + pipeline runner with receip
 - **Pipelines (GSD)** (graph-driven multi-step runs)
 - **Multi-worker orchestration spine** (scheduler claims, workers execute, heartbeats + retries)
 
-Deployed basePath: **`/ocdash`**
+Deployed path: **`/`** (no Next.js `basePath`)
 
 ---
 
@@ -93,7 +93,7 @@ sudo ./scripts/install-systemd-orchestrator.sh   --repo "$(pwd)"   --user "$USER
 
 # 5) run web (dev)
 npm -w @ocdash/web run dev
-# open: http://localhost:3000/ocdash
+# open: http://localhost:3000/
 ```
 
 ### B) foreground (no systemd)
@@ -257,7 +257,7 @@ sudo systemctl kill -s SIGKILL ocdash-worker@worker-2.service
 
 3) Watch admin view:
 
-- Open: `http://localhost:3000/ocdash/admin/runs`
+- Open: `http://localhost:3000/admin/runs`
 - Find the affected run.
 - Verify:
   - `attempt_count` increases
@@ -300,8 +300,8 @@ UI:
 
 ## Admin / Observability
 
-- Health: `GET /ocdash/api/health`
-- Admin retries/backoff view: `GET /ocdash/admin/runs`
+- Health: `GET /api/health`
+- Admin retries/backoff view: `GET /admin/runs`
   - shows `attempt_count` (reaped/retried) and computed backoff from `next_eligible_at`
 
 ---
@@ -325,6 +325,6 @@ Settings tab is **local** (stored in browser localStorage):
 
 ## Dev rules (GSD vibe)
 
-- Keep basePath bugs dead: **never hardcode `/ocdash` into router.push**.
+- Keep basePath bugs dead: **do not hardcode deployment prefixes into router.push**.
 - Prefer receipts over vibes: events + artifacts over hidden state.
 - If it’s destructive, it needs an approval gate.

@@ -182,7 +182,7 @@ Admin/observability:
 - `/admin/runs` shows retry/backoff signals (`attempt_count`, `next_eligible_at`) via `/api/admin/runs`
 
 UI rule:
-- Respect basePath; don’t hardcode `/ocdash` into navigation.
+- The deployed app is served at `/`; do not hardcode deployment prefixes into navigation.
 
 ---
 
