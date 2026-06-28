@@ -38,13 +38,13 @@ jobs:
           printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/deploy_key
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
         env:
-          DEPLOY_KEY: ${{ secrets.TANGO_WHISKEY_DEPLOY_KEY }}
-          DEPLOY_HOST: ${{ vars.TANGO_WHISKEY_HOST }}
+          DEPLOY_KEY: ${{ secrets.WATER_OC_DEPLOY_KEY }}
+          DEPLOY_HOST: ${{ vars.WATER_OC_HOST }}
 
       - name: Deploy on VM
         run: |
           ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" \
             "cd '/home/exedev/opencode-dashboard' && bash scripts/remote-deploy.sh"
         env:
-          DEPLOY_HOST: ${{ vars.TANGO_WHISKEY_HOST }}
-          DEPLOY_USER: ${{ vars.TANGO_WHISKEY_DEPLOY_USER }}
+          DEPLOY_HOST: ${{ vars.WATER_OC_HOST }}
+          DEPLOY_USER: ${{ vars.WATER_OC_DEPLOY_USER }}
